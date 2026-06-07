@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SecureBin Backend Infrastructure
+
+Resources:
+  # ---------------------------------------------------------
+  # Storage Layer
+  # ---------------------------------------------------------
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['Content-Type']
+            AllowedMethods: ['PUT']
+            AllowedOrigins: ['*']
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ---------------------------------------------------------
+  # Compute Layer (Lambdas)
+  # ---------------------------------------------------------
+  GetPresignFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/get_presign/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Timeout: 10
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref UploadsBucket
+          TABLE_NAME: !Ref JobsTable
+      Policies:
+        - DynamoDBWritePolicy:
+            TableName: !Ref JobsTable
+        - S3CrudPolicy:
+            BucketName: !Ref UploadsBucket
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+
+  GetResultFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/get_result/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+
+  ProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: lambdas/processor/
+      Handler: app.lambda_handler
+      Runtime: python3.12
+      Timeout: 60
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - S3CrudPolicy:
+            BucketName: !Ref UploadsBucket
+        - Statement:
+            - Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: "*"
+      Events:
+        S3UploadEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref UploadsBucket
+            Events: s3:ObjectCreated:*
+
+  # ---------------------------------------------------------
+  # Edge Layer (CloudFront + OAC)
+  # ---------------------------------------------------------
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub ${AWS::StackName}-OAC
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2
+        Origins:
+          - Id: PresignOrigin
+            DomainName: !Select [2, !Split ["/", !GetAtt GetPresignFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+          - Id: ResultOrigin
+            DomainName: !Select [2, !Split ["/", !GetAtt GetResultFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+            OriginAccessControlId: !GetAtt CloudFrontOAC.Id
+        DefaultCacheBehavior:
+          TargetOriginId: PresignOrigin
+          ViewerProtocolPolicy: https-only
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad # CachingDisabled
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-b3f2-7c57dd743656 # AllViewerExceptHostHeader
+        CacheBehaviors:
+          - PathPattern: /presign*
+            TargetOriginId: PresignOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-b3f2-7c57dd743656
+          - PathPattern: /result/*
+            TargetOriginId: ResultOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-b3f2-7c57dd743656
+
+  # Allow CloudFront to invoke the Lambdas
+  PresignFunctionResourcePolicy:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref GetPresignFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ApiDistribution}
+
+  ResultFunctionResourcePolicy:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref GetResultFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ApiDistribution}
+
+Outputs:
+  ApiBaseUrl:
+    Description: Update EXPO_PUBLIC_API_BASE_URL with this value
+    Value: !Sub https://${ApiDistribution.DomainName}
