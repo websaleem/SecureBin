@@ -1,0 +1,40 @@
+version: 0.2
+
+env:
+  variables:
+    TRACK: "production"
+  parameter-store:
+    UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
+    UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
+    UPLOAD_KEY_ALIAS: "/securebin/upload-key-alias"
+    UPLOAD_KEY_PASSWORD: "/securebin/upload-key-password"
+    SERVICE_ACCOUNT_JSON: "/securebin/google-play-service-account"
+    API_BASE_URL: "/securebin/prod/api-base-url"
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 20
+      java: corretto17
+      ruby: 3.2
+    commands:
+      - echo "Installing NPM dependencies..."
+      - echo "EXPO_PUBLIC_API_BASE_URL=$API_BASE_URL" > .env.production
+      - npm ci --legacy-peer-deps
+      - echo "Installing Fastlane..."
+      - gem install fastlane -NV
+  pre_build:
+    commands:
+      - echo "Decoding keystore..."
+      - echo "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > android/app/upload.jks
+      - echo "Writing service account JSON..."
+      - echo "$SERVICE_ACCOUNT_JSON" > android/app/api.json
+  build:
+    commands:
+      - echo "Building release AAB..."
+      - cd android
+      - ./gradlew bundleRelease -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
+  post_build:
+    commands:
+      - echo "Deploying to Google Play via Fastlane..."
+      - fastlane deploy track:$TRACK
