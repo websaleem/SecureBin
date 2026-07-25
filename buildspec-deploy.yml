@@ -2,14 +2,14 @@ version: 0.2
 
 env:
   variables:
-    TRACK: "production"
+    TRACK: "alpha"
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
     UPLOAD_KEY_ALIAS: "/securebin/upload-key-alias"
     UPLOAD_KEY_PASSWORD: "/securebin/upload-key-password"
     SERVICE_ACCOUNT_JSON: "/securebin/google-play-service-account"
-    API_BASE_URL: "/securebin/prod/api-base-url"
+    API_BASE_URL: "/securebin/dev/api-base-url"
 
 phases:
   install:
@@ -19,7 +19,27 @@ phases:
       ruby: 3.2
     commands:
       - echo "Installing NPM dependencies..."
-      - echo "EXPO_PUBLIC_API_BASE_URL=$API_BASE_URL" > .env.production
+      - echo "Detecting branch and configuring deployment environment..."
+      - |
+        if [ "$CODEBUILD_SOURCE_VERSION" = "main" ] || [ "$CODEBUILD_SOURCE_VERSION" = "refs/heads/main" ]; then
+          echo "=== Configuring for PRODUCTION (main branch) ==="
+          export SSM_PREFIX=/securebin/prod
+          export TARGET_BUCKET=securebin.websaleem.com
+          export ENV_FILE=.env.production
+          export TRACK_RESOLVED=production
+        else
+          echo "=== Configuring for DEVELOPMENT (dev branch) ==="
+          export SSM_PREFIX=/securebin/dev
+          export TARGET_BUCKET=dev.securebin.websaleem.com
+          export ENV_FILE=.env.development
+          export TRACK_RESOLVED=${TRACK:-alpha}
+        fi
+        export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || aws ssm get-parameter --name /securebin/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || echo "$API_BASE_URL")
+        echo "EXPO_PUBLIC_API_BASE_URL=$API_URL" > $ENV_FILE
+        cat $ENV_FILE
+        echo "export SSM_PREFIX=$SSM_PREFIX" > .env.deploy
+        echo "export TARGET_BUCKET=$TARGET_BUCKET" >> .env.deploy
+        echo "export TRACK_RESOLVED=$TRACK_RESOLVED" >> .env.deploy
       - npm ci --legacy-peer-deps
       - echo "Installing Fastlane..."
       - gem install fastlane -NV
@@ -36,5 +56,11 @@ phases:
       - ./gradlew bundleRelease -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
   post_build:
     commands:
-      - echo "Deploying to Google Play via Fastlane..."
-      - fastlane deploy track:$TRACK
+      - source .env.deploy && echo "Deploying to Google Play via Fastlane ($TRACK_RESOLVED)..."
+      - source .env.deploy && fastlane deploy track:$TRACK_RESOLVED
+      - source .env.deploy && echo "Deploying website to S3 ($TARGET_BUCKET)..."
+      - source .env.deploy && aws s3 sync website/ s3://$TARGET_BUCKET/ --exclude "*.DS_Store" --cache-control "public, max-age=300"
+      - source .env.deploy && aws s3 cp website/index.html s3://$TARGET_BUCKET/ --content-type "text/html" --cache-control "public, max-age=300"
+      - source .env.deploy && export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+      - source .env.deploy && if [ -n "$CF_DIST_ID" ] && [ "$CF_DIST_ID" != "None" ] && [ "$CF_DIST_ID" != "" ]; then aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"; fi
+      - echo "Deployment complete."

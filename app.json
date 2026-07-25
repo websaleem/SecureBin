@@ -46,7 +46,10 @@
     ],
     "scheme": "securebin",
     "extra": {
-      "router": {}
+      "router": {},
+      "eas": {
+        "projectId": "b7b6f08c-d6d5-49ec-b288-b57bb5b8fa8e"
+      }
     }
   }
 }

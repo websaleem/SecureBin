@@ -102,15 +102,19 @@ export default function CameraScreen() {
           confidence: String(result.confidence),
         },
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Categorization error:', err);
       Alert.alert(
         'Categorization Failed',
-        'Could not categorize the item. Please try again with a clearer photo.',
+        err.message || 'Could not categorize the item. Please try again with a clearer photo.',
         [{ text: 'OK' }]
       );
     } finally {
-      setIsClassifying(false);
+      // Small artificial cooldown to allow Android OS and OkHttp connection pool 
+      // to cleanly release file handles and sockets before allowing the next scan.
+      setTimeout(() => {
+        setIsClassifying(false);
+      }, 1500);
     }
   }
 

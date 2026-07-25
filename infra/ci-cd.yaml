@@ -1,10 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CI/CD Pipeline for SecureBin Mobile Application (Production) using AWS CodePipeline and CodeConnections
+Description: CI/CD Pipeline for SecureBin Mobile Application using AWS CodePipeline and CodeConnections
 
 Parameters:
   FullRepositoryId:
     Type: String
-    Description: GitHub Repository ID (e.g., websaleem/SecureBin)
+    Description: GitHub Repository ID (e.g., your-org/SecureBin)
   BranchName:
     Type: String
     Default: main
@@ -15,7 +15,7 @@ Parameters:
   NotificationEmail:
     Type: String
     Description: Email address for build notifications
-
+    
 Resources:
   ArtifactsBucket:
     Type: AWS::S3::Bucket
@@ -49,7 +49,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - ssm:GetParameters
-                Resource:
+                Resource: 
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/securebin/*"
               - Effect: Allow
                 Action:
@@ -58,7 +58,7 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:GetBucketAcl
                   - s3:GetBucketLocation
-                Resource:
+                Resource: 
                   - !GetAtt ArtifactsBucket.Arn
                   - !Sub "${ArtifactsBucket.Arn}/*"
 
@@ -84,7 +84,7 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:GetBucketAcl
                   - s3:GetBucketLocation
-                Resource:
+                Resource: 
                   - !GetAtt ArtifactsBucket.Arn
                   - !Sub "${ArtifactsBucket.Arn}/*"
               - Effect: Allow
@@ -97,12 +97,11 @@ Resources:
                   - codestar-connections:UseConnection
                 Resource: !Ref CodeConnectionArn
 
-  # Build-only project: builds AAB, stores artifact
   SecureBinBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: SecureBin-Prod-Build
-      Description: Builds the SecureBin Production Android App Bundle
+      Name: SecureBin-Build
+      Description: Builds the SecureBin Android App Bundle
       ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Artifacts:
         Type: CODEPIPELINE
@@ -119,32 +118,10 @@ Resources:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
 
-  # Deploy project: builds AAB and deploys to Google Play production track via Fastlane
-  SecureBinDeployProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: SecureBin-Prod-Deploy
-      Description: Builds and deploys SecureBin to Google Play production track
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/standard:7.0
-        EnvironmentVariables:
-          - Name: NODE_VERSION
-            Value: '20'
-          - Name: JAVA_VERSION
-            Value: '17'
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-deploy.yml
-
   SecureBinPipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
-      Name: SecureBin-Prod-Pipeline
+      Name: SecureBin-Pipeline
       RoleArn: !GetAtt CodePipelineServiceRole.Arn
       ArtifactStore:
         Type: S3
@@ -187,24 +164,12 @@ Resources:
                 Provider: Manual
                 Version: '1'
               Configuration:
-                CustomData: "Approve to deploy this build to the Google Play production track"
-        - Name: Deploy
-          Actions:
-            - Name: DeployAction
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              InputArtifacts:
-                - Name: SourceArtifact
-              Configuration:
-                ProjectName: !Ref SecureBinDeployProject
+                CustomData: "Approve the build to deploy to Google Play Store"
 
   BuildNotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: SecureBinProdPipelineNotifications
+      TopicName: SecureBinPipelineNotifications
 
   BuildNotificationSubscription:
     Type: AWS::SNS::Subscription
@@ -216,8 +181,8 @@ Resources:
   PipelineEventRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: SecureBinProdPipelineStatusRule
-      Description: Notify on CodePipeline state changes for SecureBin Production
+      Name: SecureBinPipelineStatusRule
+      Description: Notify on CodePipeline state changes for SecureBin
       EventPattern:
         source:
           - aws.codepipeline

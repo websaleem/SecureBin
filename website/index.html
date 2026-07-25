@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="/images/icon.png">
+    <title>SecureBin | AI-Powered Waste Categorization for Australia</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #4CAF50;
+            --primary-dark: #2E7D32;
+            --primary-light: #E8F5E9;
+            --bg-light: #f8faf8;
+            --bg-white: #ffffff;
+            --text-main: #0f1f0f;
+            --text-muted: #546e54;
+            --success: #4CAF50;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: var(--text-main);
+            background-color: var(--bg-light);
+            line-height: 1.6;
+        }
+
+        /* Navigation */
+        nav {
+            background: var(--bg-white);
+            padding: 1rem 5%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--primary-dark);
+            text-decoration: none;
+        }
+        .logo img { height: 34px; width: auto; }
+        .nav-links a { margin-left: 2rem; text-decoration: none; color: var(--text-muted); font-weight: 500; }
+        .nav-links a:hover { color: var(--primary-dark); }
+
+        /* Buttons */
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); box-shadow: 0 4px 12px rgba(76,175,80,0.35); }
+        .btn-outline { border: 2px solid var(--primary); color: var(--primary-dark); }
+        .btn-outline:hover { background: var(--primary); color: white; }
+
+        /* Hero */
+        .hero {
+            padding: 6rem 5%;
+            text-align: center;
+            background: linear-gradient(135deg, #ffffff 0%, #e8f5e9 100%);
+        }
+        .hero h1 { font-size: 3.5rem; line-height: 1.1; margin-bottom: 1.5rem; letter-spacing: -0.02em; }
+        .hero p { font-size: 1.25rem; color: var(--text-muted); max-width: 620px; margin: 0 auto 2.5rem; }
+        .store-buttons { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+        .store-btn {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0.85rem 1.75rem;
+            border-radius: 10px;
+            background: #0f1f0f;
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .store-btn:hover { background: #1a3a1a; transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
+        .store-btn i { font-size: 1.5rem; }
+        .store-btn small { display: block; font-size: 0.7rem; font-weight: 400; opacity: 0.75; }
+        .store-btn span { font-size: 1rem; }
+        .store-btn-wrap { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 6px; }
+        .coming-soon-tag {
+            background: var(--primary);
+            color: white;
+            font-size: 0.65rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            padding: 2px 10px;
+            border-radius: 999px;
+        }
+        .hero-badges { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+        .badge { background: var(--primary-light); color: var(--primary-dark); padding: 0.4rem 1rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
+
+        /* Bins Section */
+        .bins-section { padding: 5rem 5%; background: var(--bg-white); }
+        .section-title { text-align: center; font-size: 2.25rem; margin-bottom: 0.75rem; }
+        .section-sub { text-align: center; color: var(--text-muted); font-size: 1.1rem; max-width: 600px; margin: 0 auto 3rem; }
+        .bins-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.25rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .bin-card {
+            border-radius: 14px;
+            padding: 1.5rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            border: 1px solid #e0e0e0;
+            transition: transform 0.2s;
+        }
+        .bin-card:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.07); }
+        .bin-dot {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .bin-card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 3px; }
+        .bin-card p { font-size: 0.875rem; color: var(--text-muted); }
+
+        /* Features */
+        .features { padding: 5rem 5%; background: var(--bg-light); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem; max-width: 1200px; margin: 0 auto; }
+        .card {
+            padding: 2.5rem;
+            border-radius: 16px;
+            background: var(--bg-white);
+            border: 1px solid #e2e8f0;
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: translateY(-4px); box-shadow: 0 10px 24px rgba(0,0,0,0.06); }
+        .card i { font-size: 2.25rem; color: var(--primary); margin-bottom: 1.25rem; }
+        .card h3 { font-size: 1.2rem; margin-bottom: 0.75rem; }
+        .card p { color: var(--text-muted); font-size: 0.95rem; }
+
+        /* How it works / Tech */
+        .tech-section { padding: 5rem 5%; background: #0f1f0f; color: white; }
+        .tech-container { max-width: 1200px; margin: 0 auto; }
+        .tech-section h2 { font-size: 2.25rem; margin-bottom: 1rem; text-align: center; }
+        .tech-section .section-sub { color: #81c784; margin-bottom: 3.5rem; }
+
+        .pipeline {
+            display: flex;
+            align-items: stretch;
+            gap: 0;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 3.5rem;
+        }
+        .pipeline-step {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 1.5rem 1.25rem;
+            text-align: center;
+            flex: 1;
+            min-width: 140px;
+            max-width: 180px;
+            position: relative;
+        }
+        .pipeline-step i { font-size: 2rem; color: var(--primary); margin-bottom: 0.75rem; display: block; }
+        .pipeline-step h4 { font-size: 0.875rem; font-weight: 700; margin-bottom: 0.4rem; }
+        .pipeline-step p { font-size: 0.75rem; color: #94a3b8; line-height: 1.4; }
+        .pipeline-arrow {
+            display: flex;
+            align-items: center;
+            padding: 0 0.5rem;
+            color: var(--primary);
+            font-size: 1.25rem;
+            opacity: 0.6;
+        }
+
+        .tech-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+        .tech-list li { display: flex; align-items: flex-start; gap: 10px; background: rgba(255,255,255,0.05); border-radius: 10px; padding: 1rem 1.25rem; }
+        .tech-list i { color: var(--success); margin-top: 2px; flex-shrink: 0; }
+        .tech-list strong { display: block; margin-bottom: 2px; }
+        .tech-list span { font-size: 0.875rem; color: #94a3b8; }
+
+        /* Location section */
+        .location-section { padding: 5rem 5%; background: var(--bg-white); }
+        .location-container { max-width: 900px; margin: 0 auto; display: flex; gap: 4rem; align-items: center; flex-wrap: wrap; }
+        .location-content { flex: 1; min-width: 280px; }
+        .location-content h2 { font-size: 2rem; margin-bottom: 1rem; }
+        .location-content p { color: var(--text-muted); margin-bottom: 1rem; font-size: 1rem; }
+        .states-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.5rem; }
+        .state-chip { background: var(--primary-light); color: var(--primary-dark); border-radius: 6px; padding: 0.35rem 0.75rem; font-size: 0.8rem; font-weight: 700; }
+        .location-visual { flex: 1; min-width: 240px; text-align: center; background: var(--bg-light); border-radius: 16px; padding: 2.5rem; }
+        .location-visual i { font-size: 4rem; color: var(--primary); display: block; margin-bottom: 1rem; }
+        .location-visual p { color: var(--text-muted); font-size: 0.95rem; }
+
+        /* Disclaimer */
+        .disclaimer-section { padding: 4rem 5%; background: #fef2f2; border-top: 1px solid #fee2e2; border-bottom: 1px solid #e2e8f0; }
+        .disclaimer-container { max-width: 900px; margin: 0 auto; text-align: center; }
+        .disclaimer-container h2 { font-size: 1.5rem; color: #b91c1c; margin-bottom: 1rem; display: flex; align-items: center; justify-content: center; gap: 8px; }
+        .disclaimer-container p { color: #7f1d1d; font-size: 0.95rem; margin-bottom: 1rem; }
+        .disclaimer-container ul { list-style: none; display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem; margin-top: 1.5rem; }
+        .disclaimer-container li a { color: #b91c1c; font-weight: 600; text-decoration: underline; font-size: 0.9rem; }
+        .disclaimer-container li a:hover { color: #7f1d1d; }
+
+        /* Footer */
+        footer { background: var(--bg-white); padding: 3rem 5%; text-align: center; border-top: 1px solid #e2e8f0; }
+        .footer-logo { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 1.5rem; font-size: 1.25rem; font-weight: 800; color: var(--primary-dark); text-decoration: none; }
+        .footer-logo img { height: 28px; }
+        .footer-links a { color: var(--text-muted); margin: 0 1rem; text-decoration: none; font-size: 0.9rem; }
+        .footer-links a:hover { color: var(--primary-dark); }
+        .copyright { color: var(--text-muted); margin-top: 1.5rem; font-size: 0.85rem; }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2.25rem; }
+            .nav-links { display: none; }
+            .pipeline-arrow { display: none; }
+            .pipeline-step { max-width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+    <nav>
+        <a class="logo" href="#home">
+            <img src="/images/icon.png" alt="SecureBin Logo"> SecureBin
+        </a>
+        <div class="nav-links">
+            <a href="#features">Features</a>
+            <a href="#bins">Bin Categories</a>
+            <a href="#how-it-works">How it Works</a>
+            <a href="#location">Location-Aware</a>
+            <a href="securebin/privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            <a href="securebin/terms.html" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+            <a href="securebin/contact-support.html">Contact Support</a>
+        </div>
+    </nav>
+
+    <!-- Hero -->
+    <section class="hero" id="home">
+        <h1>Know Your Bin.<br><span style="color: var(--primary);">Every Time.</span></h1>
+        <p>SecureBin uses your camera and AI to instantly identify waste items and tell you exactly which bin they belong to — tailored to your Australian council's rules.</p>
+
+        <div class="store-buttons">
+            <div class="store-btn-wrap">
+                <a href="#" class="store-btn">
+                    <i class="fab fa-apple"></i>
+                    <div>
+                        <small>Download on the</small>
+                        <span>App Store</span>
+                    </div>
+                </a>
+                <span class="coming-soon-tag">Coming Soon</span>
+            </div>
+            <div class="store-btn-wrap">
+                <a href="securebin/contact-support.html?topic=Become+Android+Tester" class="store-btn">
+                    <i class="fab fa-android"></i>
+                    <div>
+                        <small>Android Only</small>
+                        <span>Become Tester</span>
+                    </div>
+                </a>
+                <span class="coming-soon-tag" style="background: var(--primary);">Beta Open</span>
+            </div>
+        </div>
+
+        <div class="hero-badges">
+            <span class="badge"><i class="fas fa-check-circle"></i> 100% Free</span>
+            <span class="badge"><i class="fas fa-camera"></i> Scan Any Item</span>
+            <span class="badge"><i class="fas fa-map-marker-alt"></i> Council-Specific Advice</span>
+            <span class="badge"><i class="fas fa-mobile-alt"></i> iOS &amp; Android</span>
+            <span class="badge"><i class="fas fa-database"></i> History Stored Locally</span>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features" id="features">
+        <h2 class="section-title">Why SecureBin?</h2>
+        <p class="section-sub" style="text-align:center; color:var(--text-muted); max-width:600px; margin: 0 auto 3rem;">No more guessing. SecureBin puts AI waste expertise in your pocket.</p>
+        <div class="grid">
+            <div class="card">
+                <i class="fas fa-camera"></i>
+                <h3>Instant Camera Scan</h3>
+                <p>Point your camera at any item — packaging, food waste, electronics, clothing. SecureBin frames the item in a 4:3 capture window, crops it precisely, and sends only what you aimed at to the AI. Results arrive in seconds.</p>
+            </div>
+            <div class="card">
+                <i class="fas fa-brain"></i>
+                <h3>Amazon Bedrock Vision AI</h3>
+                <p>Powered by Claude on Amazon Bedrock's APAC cross-region inference profile (Sydney + Melbourne). The model identifies the item, selects the correct bin from 8 categories, and provides a one-sentence reason — every scan.</p>
+            </div>
+            <div class="card">
+                <i class="fas fa-map-marker-alt"></i>
+                <h3>Council-Specific Rules</h3>
+                <p>Select your state and council once. Every scan is answered using your council's specific bin collection rules. Glass bins, FOGO schemes, and soft plastic drop-off requirements vary by council — SecureBin knows the difference.</p>
+            </div>
+            <div class="card">
+                <i class="fas fa-history"></i>
+                <h3>Local Scan History</h3>
+                <p>Every scan is saved on your device — image, item name, bin classification, and reason. Browse your history, tap any past scan to review it, or clear everything with one tap. Nothing leaves your device beyond the scan itself.</p>
+            </div>
+            <div class="card">
+                <i class="fas fa-shield-alt"></i>
+                <h3>Privacy by Design</h3>
+                <p>Only the cropped image, your state, and council name are sent to the backend. No account required, no tracking, no ads. Scan history and location settings are stored exclusively on your device using AsyncStorage.</p>
+            </div>
+            <div class="card">
+                <i class="fas fa-glass-martini-alt"></i>
+                <h3>Glass UI</h3>
+                <p>SecureBin features a frosted glass camera interface with a spotlight capture frame. On iOS, the blur uses the native UIVisualEffectView — the same material as Apple's own apps. Fully camera-immersive with minimal distraction.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Bin Categories -->
+    <section class="bins-section" id="bins">
+        <h2 class="section-title">8 Bin Categories</h2>
+        <p class="section-sub">SecureBin covers the full spectrum of Australian kerbside and drop-off waste streams.</p>
+        <div class="bins-grid">
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#F44336;"></div>
+                <div>
+                    <h3>Red — General Waste</h3>
+                    <p>Landfill items, contaminated packaging, nappies, broken ceramics, soft plastics (most councils).</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#FFC107;"></div>
+                <div>
+                    <h3>Yellow — Mixed Recycling</h3>
+                    <p>Clean paper, cardboard, hard plastics, aluminium and steel cans, glass where no separate bin exists.</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#4CAF50;"></div>
+                <div>
+                    <h3>Green — Organics / FOGO</h3>
+                    <p>Food scraps, garden waste, grass clippings, and uncoated paper towels. Council-dependent.</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#e0e0e0; border: 2px solid #BDBDBD;"></div>
+                <div>
+                    <h3>White — Glass Only</h3>
+                    <p>Glass bottles and jars — kerbside glass-only stream in select councils (common in SA &amp; NT).</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#9C27B0;"></div>
+                <div>
+                    <h3>Purple — Glass (AS4123)</h3>
+                    <p>Newer kerbside glass bin rolling out in Victoria (CRS) and parts of NSW.</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#2196F3;"></div>
+                <div>
+                    <h3>Blue — Drop-Off Required</h3>
+                    <p>E-waste, batteries, soft plastics, household chemicals. Not kerbside — take to a collection point.</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#FF9800;"></div>
+                <div>
+                    <h3>Orange — Reuse / Donate</h3>
+                    <p>Clothes, working electronics, furniture, and books that still have life — charity bin or op shop.</p>
+                </div>
+            </div>
+            <div class="bin-card">
+                <div class="bin-dot" style="background:#9E9E9E;"></div>
+                <div>
+                    <h3>Grey — Unsure / Ask Council</h3>
+                    <p>Classification is ambiguous or item-specific. SecureBin advises you to check with your local council.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Location-Aware -->
+    <section class="location-section" id="location">
+        <div class="location-container">
+            <div class="location-content">
+                <h2>Built for Every Australian Council</h2>
+                <p>Bin rules are not uniform across Australia. A purple glass bin may be standard in inner Melbourne but nonexistent in rural Queensland. SecureBin asks for your state and council on first launch and uses that context in every Bedrock prompt.</p>
+                <p>Your location preference is saved locally and can be updated any time from the Settings button on the camera screen. Coverage spans all states and territories.</p>
+                <div class="states-grid">
+                    <span class="state-chip">ACT</span>
+                    <span class="state-chip">NSW</span>
+                    <span class="state-chip">NT</span>
+                    <span class="state-chip">QLD</span>
+                    <span class="state-chip">SA</span>
+                    <span class="state-chip">TAS</span>
+                    <span class="state-chip">VIC</span>
+                    <span class="state-chip">WA</span>
+                </div>
+            </div>
+            <div class="location-visual">
+                <i class="fas fa-map-marked-alt"></i>
+                <p><strong>500+ Australian councils</strong> supported across all states and territories. Select yours once — every scan uses your council's specific rules.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it Works / Tech -->
+    <section class="tech-section" id="how-it-works">
+        <div class="tech-container">
+            <h2>How SecureBin Works</h2>
+            <p class="section-sub" style="text-align:center;">A fully event-driven AWS pipeline processes every scan in seconds.</p>
+
+            <div class="pipeline">
+                <div class="pipeline-step">
+                    <i class="fas fa-camera"></i>
+                    <h4>Capture</h4>
+                    <p>Camera frames item in 4:3 reticle. Image cropped &amp; resized to max 1024px JPEG.</p>
+                </div>
+                <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+                <div class="pipeline-step">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <h4>Presign</h4>
+                    <p>App requests a pre-signed S3 URL from CloudFront, sending state &amp; council.</p>
+                </div>
+                <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+                <div class="pipeline-step">
+                    <i class="fab fa-aws"></i>
+                    <h4>S3 Upload</h4>
+                    <p>Cropped image PUT directly to private S3 bucket via pre-signed URL.</p>
+                </div>
+                <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+                <div class="pipeline-step">
+                    <i class="fas fa-brain"></i>
+                    <h4>Bedrock AI</h4>
+                    <p>S3 event triggers Lambda. Reads council from DynamoDB. Sends council-aware vision prompt to Claude.</p>
+                </div>
+                <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
+                <div class="pipeline-step">
+                    <i class="fas fa-check-circle"></i>
+                    <h4>Result</h4>
+                    <p>App polls /result every 2s. Displays item name, bin colour, and reason.</p>
+                </div>
+            </div>
+
+            <ul class="tech-list">
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>AWS CloudFront + OAC</strong>
+                        <span>All API requests go through CloudFront. Origin Access Control signs requests to Lambda function URLs with SigV4 — no credentials in the app.</span>
+                    </div>
+                </li>
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>Event-Driven S3 Pipeline</strong>
+                        <span>Image upload triggers the Processor Lambda asynchronously. The app polls for the result — no synchronous API call holds a connection open.</span>
+                    </div>
+                </li>
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>APAC Cross-Region Bedrock</strong>
+                        <span>Uses the APAC inference profile routing between Sydney and Melbourne for low-latency, high-availability AI classification.</span>
+                    </div>
+                </li>
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>DynamoDB Job Tracking</strong>
+                        <span>Every job stores state, council, bin, item name, reason, and confidence with a 24-hour TTL. Confidence is retained in the database but not shown to the user.</span>
+                    </div>
+                </li>
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>Local-First Storage</strong>
+                        <span>Scan history, images, and location preferences are all stored on your device. No account, no cloud sync, no data retained after processing.</span>
+                    </div>
+                </li>
+                <li>
+                    <i class="fas fa-check"></i>
+                    <div>
+                        <strong>Precise Crop Before Upload</strong>
+                        <span>Only the content inside the capture frame is uploaded and analysed — not the full camera frame. What you see is exactly what the AI sees.</span>
+                    </div>
+                </li>
+            </ul>
+        </div>
+    </section>
+
+    <!-- Disclaimer -->
+    <section class="disclaimer-section">
+        <div class="disclaimer-container">
+            <h2><i class="fas fa-exclamation-triangle"></i> Disclaimer of Government Affiliation</h2>
+            <p><strong>SecureBin is an independent application and does not represent, nor is it affiliated with, any government entity.</strong></p>
+            <p>The bin collection and waste disposal guidelines provided by this app are sourced from publicly available Australian state and council authorities. For official information, please visit the respective government sources:</p>
+            <ul>
+                <li><a href="https://www.cityservices.act.gov.au/recycling-and-waste" target="_blank" rel="noopener noreferrer">ACT Government — Recycling and Waste</a></li>
+                <li><a href="https://www.epa.nsw.gov.au/your-environment/recycling-and-reuse" target="_blank" rel="noopener noreferrer">NSW EPA — Recycling and Reuse</a></li>
+                <li><a href="https://nt.gov.au/environment/environment-protection-recycling-waste" target="_blank" rel="noopener noreferrer">NT Government — Environment, Recycling and Waste</a></li>
+                <li><a href="https://www.qld.gov.au/environment/management/waste/recovery" target="_blank" rel="noopener noreferrer">Queensland Government — Waste Recovery</a></li>
+                <li><a href="https://www.epa.sa.gov.au/environmental_info/waste_recycling" target="_blank" rel="noopener noreferrer">SA EPA — Waste and Recycling</a></li>
+                <li><a href="https://epa.tas.gov.au/business-industry/regulation/waste-management" target="_blank" rel="noopener noreferrer">Tasmania EPA — Waste Management</a></li>
+                <li><a href="https://www.epa.vic.gov.au/waste" target="_blank" rel="noopener noreferrer">Victoria EPA — Waste</a></li>
+                <li><a href="https://www.sustainability.vic.gov.au/recycling-and-reducing-waste-at-home" target="_blank" rel="noopener noreferrer">Sustainability Victoria — Recycling and Reducing Waste</a></li>
+                <li><a href="https://www.dwer.wa.gov.au/programs/waste" target="_blank" rel="noopener noreferrer">WA Dept of Water &amp; Environmental Regulation — Waste</a></li>
+                <li><a href="https://www.australia.gov.au/states" target="_blank" rel="noopener noreferrer">Local Council Websites (.gov.au)</a></li>
+                <li><a href="https://recyclingnearyou.com.au" target="_blank" rel="noopener noreferrer">Planet Ark — Recycling Near You</a></li>
+                <li><a href="https://www.arlmarketplace.org.au" target="_blank" rel="noopener noreferrer">Australasian Recycling Label (ARL)</a></li>
+            </ul>
+        </div>
+    </section>
+
+    <footer>
+        <a class="footer-logo" href="#home">
+            <img src="/images/icon.png" alt="SecureBin"> SecureBin
+        </a>
+        <div class="footer-links">
+            <a href="contact-support.html">Contact Support</a>
+            <a href="privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            <a href="terms.html" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+            <a href="https://www.websaleem.com" target="_blank" rel="noopener noreferrer">websaleem.com</a>
+        </div>
+        <p class="copyright">&copy; 2026 SecureBin. Developed by Saleem Khan. All rights reserved.</p>
+    </footer>
+
+</body>
+</html>
