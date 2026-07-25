@@ -6,6 +6,14 @@ Parameters:
     Type: String
     Default: 'amazon.nova-pro-v1:0'
     Description: The Bedrock model ID for image categorization
+  ProdCloudFrontUrl:
+    Type: String
+    Default: 'https://securebin.websaleem.com'
+    Description: Production CloudFront Origin URL
+  DevCloudFrontUrl:
+    Type: String
+    Default: 'https://dev.securebin.websaleem.com'
+    Description: Development CloudFront Origin URL
 
 Resources:
   # ───────── DynamoDB Table ─────────
@@ -41,8 +49,8 @@ Resources:
             AllowedOrigins:
               - 'https://securebin.websaleem.com'
               - 'https://dev.securebin.websaleem.com'
-              - 'https://securebin-prod-cdn.cloudfront.net'
-              - 'https://securebin-dev-cdn.cloudfront.net'
+              - !Ref ProdCloudFrontUrl
+              - !Ref DevCloudFrontUrl
               - 'http://localhost:8081'
             MaxAge: 3600
       LifecycleConfiguration:
@@ -215,8 +223,8 @@ Resources:
         AllowOrigins:
           - 'https://securebin.websaleem.com'
           - 'https://dev.securebin.websaleem.com'
-          - 'https://securebin-prod-cdn.cloudfront.net'
-          - 'https://securebin-dev-cdn.cloudfront.net'
+          - !Ref ProdCloudFrontUrl
+          - !Ref DevCloudFrontUrl
           - 'http://localhost:8081'
         AllowMethods:
           - GET
