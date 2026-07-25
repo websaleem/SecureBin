@@ -41,6 +41,7 @@ Resources:
             AllowedOrigins:
               - 'https://securebin.websaleem.com'
               - 'https://dev.securebin.websaleem.com'
+              - 'https://securebin-prod-cdn.cloudfront.net'
               - 'https://securebin-dev-cdn.cloudfront.net'
               - 'http://localhost:8081'
             MaxAge: 3600
@@ -214,6 +215,7 @@ Resources:
         AllowOrigins:
           - 'https://securebin.websaleem.com'
           - 'https://dev.securebin.websaleem.com'
+          - 'https://securebin-prod-cdn.cloudfront.net'
           - 'https://securebin-dev-cdn.cloudfront.net'
           - 'http://localhost:8081'
         AllowMethods:

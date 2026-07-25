@@ -22,17 +22,21 @@ phases:
           export SSM_PREFIX=/securebin/prod
           export TARGET_BUCKET=securebin.websaleem.com
           export ENV_FILE=.env.production
+          export DEFAULT_CF_DIST_ID="SECUREBIN_PROD_CF_DIST_ID"
         else
           echo "=== Configuring for DEVELOPMENT (dev branch) ==="
           export SSM_PREFIX=/securebin/dev
           export TARGET_BUCKET=dev.securebin.websaleem.com
           export ENV_FILE=.env.development
+          export DEFAULT_CF_DIST_ID="SECUREBIN_DEV_CF_DIST_ID"
         fi
         export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || aws ssm get-parameter --name /securebin/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || echo "$API_BASE_URL")
+        export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text 2>/dev/null || echo "$DEFAULT_CF_DIST_ID")
         echo "EXPO_PUBLIC_API_BASE_URL=$API_URL" > $ENV_FILE
         cat $ENV_FILE
         echo "export SSM_PREFIX=$SSM_PREFIX" > .env.deploy
         echo "export TARGET_BUCKET=$TARGET_BUCKET" >> .env.deploy
+        echo "export CF_DIST_ID=$CF_DIST_ID" >> .env.deploy
       - npm ci --legacy-peer-deps
   pre_build:
     commands:
@@ -49,7 +53,7 @@ phases:
       - source .env.deploy && echo "Deploying website to S3 ($TARGET_BUCKET)..."
       - source .env.deploy && aws s3 sync website/ s3://$TARGET_BUCKET/ --exclude "*.DS_Store" --cache-control "public, max-age=300"
       - source .env.deploy && aws s3 cp website/index.html s3://$TARGET_BUCKET/ --content-type "text/html" --cache-control "public, max-age=300"
-      - source .env.deploy && export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text 2>/dev/null || echo "")
+      - source .env.deploy && echo "Invalidating CloudFront distribution ($CF_DIST_ID)..."
       - source .env.deploy && if [ -n "$CF_DIST_ID" ] && [ "$CF_DIST_ID" != "None" ] && [ "$CF_DIST_ID" != "" ]; then aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"; fi
       - echo "Build and website deployment complete."
 

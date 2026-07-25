@@ -58,9 +58,22 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:GetBucketAcl
                   - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:DeleteObject
                 Resource: 
                   - !GetAtt ArtifactsBucket.Arn
                   - !Sub "${ArtifactsBucket.Arn}/*"
+                  - "arn:aws:s3:::securebin.websaleem.com"
+                  - "arn:aws:s3:::securebin.websaleem.com/*"
+                  - "arn:aws:s3:::dev.securebin.websaleem.com"
+                  - "arn:aws:s3:::dev.securebin.websaleem.com/*"
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: 
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/SECUREBIN_PROD_CF_DIST_ID"
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/SECUREBIN_DEV_CF_DIST_ID"
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/*"
 
   CodePipelineServiceRole:
     Type: AWS::IAM::Role
