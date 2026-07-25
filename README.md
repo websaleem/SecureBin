@@ -308,28 +308,54 @@ npx tsc --noEmit
 
 ## Testing
 
-`postbin.py` exercises the full AWS backend pipeline from the command line, including location-aware categorization:
+`test/testbin.py` exercises the full AWS backend pipeline (presign → S3 upload → poll) from the command line, including location-aware categorization:
 
 ```bash
 # Install dependencies
 pip install requests pillow
 
 # Basic test (no location)
-python postbin.py test/images/plastic_bottle.jpg
+python test/testbin.py test/images/plastic_bottle.jpg \
+  --base-url https://xxxx.cloudfront.net
 
 # With state + council (tests location-aware Bedrock prompt)
-python postbin.py test/images/plastic_bottle.jpg \
+python test/testbin.py test/images/plastic_bottle.jpg \
+  --base-url https://xxxx.cloudfront.net \
   --state VIC \
   --council "City of Melbourne"
 
-# Override the CloudFront base URL
-python postbin.py test/images/banana_peel.jpg \
+# Or set the base URL via environment variable
+export SECUREBIN_API_BASE_URL=https://xxxx.cloudfront.net
+python test/testbin.py test/images/banana_peel.jpg \
   --state NSW \
-  --council "City of Sydney" \
-  --base-url https://xxxx.cloudfront.net
+  --council "City of Sydney Council"
 ```
 
 Test images covering all bin categories live in `test/images/`.
+
+---
+
+## CI / CD (AWS CodePipeline)
+
+The CI/CD pipeline has been migrated to **AWS CodePipeline** using Fastlane for Android deployments to the Google Play Store. The pipeline connects securely to GitHub using an AWS CodeConnection.
+
+The AWS infrastructure is defined in `cloudformation/ci-cd.yaml` which provisions a 4-stage pipeline:
+1. **Source**: Pulls code from GitHub securely via CodeConnections.
+2. **Build**: Builds the Android AAB using AWS CodeBuild.
+3. **Approval**: Pauses the pipeline and waits for manual approval in the AWS Console.
+4. **Deploy**: Deploys the AAB to Google Play via Fastlane running on AWS CodeBuild.
+
+EventBridge & SNS are also configured to send email notifications on pipeline success/failure.
+
+### Required AWS Secrets
+The pipelines fetch the following secrets from AWS Secrets Manager (stored under `securebin/*`):
+- `securebin/upload-keystore` (Base64 encoded `.jks` file)
+- `securebin/upload-store-password`
+- `securebin/upload-key-alias`
+- `securebin/upload-key-password`
+- `securebin/google-play-service-account` (JSON key for Play Console)
+
+> **Note:** The old GitHub Actions workflows have been removed to prevent duplicate runs. You must provision the AWS resources and populate the secrets for the CI/CD pipeline to function.
 
 ---
 
@@ -344,3 +370,9 @@ Test images covering all bin categories live in `test/images/`.
 - Scan images stored in the app's document directory (`scan_images/`) — persist across restarts, cleared when user taps "Clear All History"
 - `expo-blur` uses `UIVisualEffectView` on iOS for native glass blur; uses `RenderEffect` on Android
 - The `confidence` value is stored in DynamoDB and used internally but not shown to the user — the identified **item name** is displayed instead
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -1,3 +1,4 @@
+import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { CategorizationResult } from '../types';
 import { getLocation } from './location';
@@ -10,7 +11,7 @@ const MAX_IMAGE_PX = 1024;
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 30;
 
-type PresignResponse = { uploadUrl: string; jobId: string };
+type PresignResponse = { uploadUrl: string; uploadFields: Record<string, string>; jobId: string };
 type JobResult = {
   status: 'pending' | 'done' | 'failed';
   bin?: string;
@@ -45,19 +46,62 @@ export async function categorizeImage(imageUri: string): Promise<CategorizationR
     params.set('state', location.state);
     params.set('council', location.council);
   }
+  // Bypass CloudFront caching. Presign URLs must be unique per request.
+  params.set('t', Date.now().toString());
+  
   const presignRes = await fetch(`${API_BASE}/presign?${params}`);
   if (!presignRes.ok) throw new Error(`Presign error: ${presignRes.status}`);
-  const { uploadUrl, jobId } = (await presignRes.json()) as PresignResponse;
+  const { uploadUrl, uploadFields, jobId } = (await presignRes.json()) as PresignResponse;
+  if (!/^[a-zA-Z0-9\-]+$/.test(jobId)) throw new Error('Invalid jobId format');
 
-  // Step 2: upload image directly to S3 via pre-signed URL
-  const fileRes = await fetch(resizedUri);
-  const blob = await fileRes.blob();
-  const uploadRes = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'image/jpeg' },
-    body: blob,
-  });
-  if (!uploadRes.ok) throw new Error(`S3 upload error: ${uploadRes.status}`);
+  // Step 2: upload image directly to S3 via pre-signed POST form
+  // Step 2: upload image directly to S3 via pre-signed POST form
+  // Use the modern Expo File API natively to bypass deprecation warnings.
+  // CRITICAL FIX: ImageManipulator overwrites the same cache file path if manipulated quickly.
+  // If we try to fetch() a file that is actively mutating in a subsequent scan, whatwg-fetch throws a network crash.
+  // We MUST copy it to a strictly unique path before uploading.
+  const uniqueId = Date.now().toString() + Math.random().toString(36).substring(7);
+  const manipFile = new File(resizedUri);
+  const uniqueFile = new File(manipFile.parentDirectory, `upload_${uniqueId}.jpg`);
+  await manipFile.copy(uniqueFile);
+
+  const formData = new FormData();
+  for (const [key, value] of Object.entries(uploadFields)) {
+    formData.append(key, value);
+  }
+  
+  // Use raw React Native URI format instead of `new File()` because the fetch polyfill crashes on Expo File objects.
+  formData.append('file', {
+    uri: uniqueFile.uri,
+    name: 'upload.jpg',
+    type: 'image/jpeg',
+  } as any);
+
+  try {
+    // Completely bypass whatwg-fetch polyfill by using native XMLHttpRequest
+    await new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadUrl);
+      xhr.setRequestHeader('Connection', 'close'); // Aggressively tear down socket
+      
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          reject(new Error(`S3 upload error: ${xhr.status} - ${xhr.responseText}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error('S3 upload network request failed (XHR)'));
+      xhr.send(formData);
+    });
+  } finally {
+    // Always clean up the temporary unique file to prevent disk leaks
+    try {
+      uniqueFile.delete();
+    } catch (e) {
+      // Ignore cleanup errors
+    }
+  }
 
   // Step 3: poll for categorization result
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {

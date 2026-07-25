@@ -86,20 +86,21 @@ def lambda_handler(event, context):
             )
             raise
 
-        # Step 5: generate presigned PUT
+        # Step 5: generate presigned POST
         try:
-            presigned_url = _s3.generate_presigned_url(
-                'put_object',
-                Params={
-                    'Bucket': BUCKET,
-                    'Key': key,
-                    'ContentType': media_type
-                },
-                ExpiresIn=EXPIRES,
-                HttpMethod='PUT'
+            MAX_BYTES = 5 * 1024 * 1024
+            post_data = _s3.generate_presigned_post(
+                Bucket=BUCKET,
+                Key=key,
+                Fields={"Content-Type": media_type},
+                Conditions=[
+                    {"Content-Type": media_type},
+                    ["content-length-range", 1, MAX_BYTES]
+                ],
+                ExpiresIn=EXPIRES
             )
             logger.info(
-                "Presigned PUT generated | jobId=%s | bucket=%s | expires_in=%d | request_id=%s",
+                "Presigned POST generated | jobId=%s | bucket=%s | expires_in=%d | request_id=%s",
                 job_id, BUCKET, EXPIRES, request_id,
             )
         except Exception as e:
@@ -112,7 +113,8 @@ def lambda_handler(event, context):
         # Step 6: return success
         logger.info("presign success | jobId=%s | request_id=%s", job_id, request_id)
         return _json(200, {
-            "uploadUrl": presigned_url,
+            "uploadUrl": post_data["url"],
+            "uploadFields": post_data["fields"],
             "jobId": job_id,
             "expiresIn": EXPIRES
         })

@@ -23,7 +23,11 @@ export function saveImageLocally(imageUri: string, id: string): string {
 export async function getHistory(): Promise<ScanRecord[]> {
   const raw = await AsyncStorage.getItem(HISTORY_KEY);
   if (!raw) return [];
-  return JSON.parse(raw) as ScanRecord[];
+  try {
+    return JSON.parse(raw) as ScanRecord[];
+  } catch {
+    return [];
+  }
 }
 
 export async function addToHistory(record: ScanRecord): Promise<void> {

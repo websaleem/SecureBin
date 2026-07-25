@@ -2,129 +2,226 @@
 """
 SecureBin — CloudFront API pipeline test caller.
 
-Mirrors the behavior of categorizeImage() in the app:
-  1. Resize + base64-encode a local image
-  2. POST { image, mediaType } to the CloudFront endpoint
-  3. Validate the response shape and bin value
+Mirrors the 3-step flow used by categorizeImage() in the app:
+  1. GET /presign  → obtain pre-signed S3 upload URL + jobId
+  2. PUT image     → upload JPEG directly to S3 via the pre-signed URL
+  3. GET /result   → poll until status is 'done' or 'failed'
 
 Usage:
-  python test_categorize.py <image_path> [--url https://xxxx.cloudfront.net/categorize]
+  # Basic test (no location)
+  python testbin.py test/images/plastic_bottle.jpg
+
+  # With state + council (tests location-aware Bedrock prompt)
+  python testbin.py test/images/plastic_bottle.jpg \
+    --state VIC \
+    --council "City of Melbourne"
+
+  # Override the CloudFront base URL
+  python testbin.py test/images/banana_peel.jpg \
+    --state NSW \
+    --council "City of Sydney Council" \
+    --base-url https://xxxx.cloudfront.net
 
 Env vars (fallbacks):
-  SECUREBIN_API_URL   CloudFront endpoint URL
+  SECUREBIN_API_BASE_URL   CloudFront base URL (e.g. https://xxxx.cloudfront.net)
 """
 
 import argparse
-import base64
 import io
 import json
 import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlencode
 
 import requests
 from PIL import Image
 
-# Match whatever your app's resizeAndEncode() targets.
-# Adjust if your RN helper uses different values.
+# Match the app's resizeImage() settings.
 MAX_DIMENSION = 1024
 JPEG_QUALITY = 85
-VALID_BINS = {"red", "green", "yellow", "white"}
+POLL_INTERVAL_S = 2
+POLL_MAX_ATTEMPTS = 30
+
+VALID_BINS = {"red", "green", "yellow", "white", "purple", "blue", "orange", "grey"}
 
 
-def resize_and_encode(image_path: Path) -> tuple[str, str]:
-    """Resize image to fit MAX_DIMENSION and return (base64_str, media_type)."""
+def resize_image(image_path: Path) -> bytes:
+    """Resize image to fit MAX_DIMENSION and return JPEG bytes."""
     with Image.open(image_path) as img:
-        # Normalize orientation from EXIF, convert to RGB for JPEG
         img = img.convert("RGB")
         img.thumbnail((MAX_DIMENSION, MAX_DIMENSION), Image.LANCZOS)
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=JPEG_QUALITY, optimize=True)
-        raw = buf.getvalue()
-
-    b64 = base64.b64encode(raw).decode("ascii")
-    return b64, "image/jpeg"
+        return buf.getvalue()
 
 
-def call_api(url: str, image_b64: str, media_type: str, timeout: int = 30) -> tuple[dict, float]:
-    """POST the payload and return (parsed_json, elapsed_seconds)."""
-    payload = {"image": image_b64, "mediaType": media_type}
-    headers = {"Content-Type": "application/json"}
+def step_presign(
+    base_url: str, state: str | None, council: str | None, timeout: int
+) -> tuple[str, dict[str, str], str]:
+    """Step 1: Request a pre-signed S3 upload URL and jobId."""
+    params: dict[str, str] = {"mediaType": "image/jpeg"}
+    if state:
+        params["state"] = state
+    if council:
+        params["council"] = council
 
-    start = time.perf_counter()
-    resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
-    elapsed = time.perf_counter() - start
+    url = f"{base_url}/presign?{urlencode(params)}"
+    print(f"  → GET {url}")
 
+    resp = requests.get(url, timeout=timeout)
     if not resp.ok:
-        # Show body for debugging — Lambda/API Gateway often put useful info here
         raise RuntimeError(
-            f"Categorization API error: {resp.status_code}\n"
-            f"Body: {resp.text[:500]}"
+            f"Presign error: {resp.status_code}\nBody: {resp.text[:500]}"
         )
 
-    return resp.json(), elapsed
+    data = resp.json()
+    upload_url = data.get("uploadUrl", "")
+    upload_fields = data.get("uploadFields", {})
+    job_id = data.get("jobId", "")
+    if not upload_url or not job_id:
+        raise RuntimeError(f"Unexpected presign response: {json.dumps(data, indent=2)}")
+
+    print(f"  → jobId: {job_id}")
+    return upload_url, upload_fields, job_id
 
 
-def validate(parsed: dict) -> list[str]:
-    """Return a list of validation issues (empty list = all good)."""
+def step_upload(upload_url: str, upload_fields: dict[str, str], image_bytes: bytes, timeout: int) -> None:
+    """Step 2: POST the JPEG directly to S3 via the pre-signed URL."""
+    print(f"  → POST {len(image_bytes):,} bytes to S3")
+    files = {"file": ("upload.jpg", image_bytes, "image/jpeg")}
+    resp = requests.post(
+        upload_url,
+        data=upload_fields,
+        files=files,
+        timeout=timeout,
+    )
+    if not resp.ok:
+        raise RuntimeError(
+            f"S3 upload error: {resp.status_code}\nBody: {resp.text[:500]}"
+        )
+    print("  → Upload OK")
+
+
+def step_poll(base_url: str, job_id: str, timeout: int) -> dict:
+    """Step 3: Poll GET /result/{jobId} until done or failed."""
+    url = f"{base_url}/result/{job_id}"
+    for attempt in range(1, POLL_MAX_ATTEMPTS + 1):
+        time.sleep(POLL_INTERVAL_S)
+        print(f"  → Poll {attempt}/{POLL_MAX_ATTEMPTS}  GET {url}")
+        resp = requests.get(url, timeout=timeout)
+        if not resp.ok:
+            raise RuntimeError(
+                f"Result API error: {resp.status_code}\nBody: {resp.text[:500]}"
+            )
+        data = resp.json()
+        status = data.get("status")
+        if status == "done":
+            return data
+        if status == "failed":
+            raise RuntimeError(
+                f"Categorization failed: {data.get('error', 'unknown')}"
+            )
+    raise RuntimeError(
+        f"Timed out after {POLL_MAX_ATTEMPTS * POLL_INTERVAL_S}s"
+    )
+
+
+def validate(result: dict) -> list[str]:
+    """Return a list of validation issues (empty = all good)."""
     issues = []
-    bin_value = parsed.get("bin")
+    bin_value = result.get("bin")
     if bin_value not in VALID_BINS:
-        issues.append(f"Unexpected bin value: {bin_value!r} (expected one of {sorted(VALID_BINS)})")
+        issues.append(
+            f"Unexpected bin value: {bin_value!r} (expected one of {sorted(VALID_BINS)})"
+        )
+    if not result.get("item"):
+        issues.append("Missing 'item' field in result")
+    if not result.get("reason"):
+        issues.append("Missing 'reason' field in result")
     return issues
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Test SecureBin categorization API via CloudFront.")
+    ap = argparse.ArgumentParser(
+        description="Test the SecureBin categorization pipeline via CloudFront."
+    )
     ap.add_argument("image", type=Path, help="Path to a local image file")
     ap.add_argument(
-        "--url",
-        default=os.environ.get("SECUREBIN_API_URL"),
-        help="CloudFront API URL (or set SECUREBIN_API_URL env var)",
+        "--base-url",
+        default=os.environ.get("SECUREBIN_API_BASE_URL"),
+        help="CloudFront base URL (or set SECUREBIN_API_BASE_URL env var)",
     )
-    ap.add_argument("--timeout", type=int, default=30, help="Request timeout in seconds")
+    ap.add_argument("--state", default=None, help="Australian state/territory code (e.g. VIC)")
+    ap.add_argument("--council", default=None, help='Council name (e.g. "City of Melbourne")')
+    ap.add_argument("--timeout", type=int, default=30, help="HTTP request timeout in seconds")
     args = ap.parse_args()
 
-    if not args.url:
-        print("ERROR: Provide --url or set SECUREBIN_API_URL", file=sys.stderr)
+    if not args.base_url:
+        print("ERROR: Provide --base-url or set SECUREBIN_API_BASE_URL", file=sys.stderr)
         return 2
     if not args.image.is_file():
         print(f"ERROR: Not a file: {args.image}", file=sys.stderr)
         return 2
 
-    print(f"→ Image:    {args.image}")
-    print(f"→ Endpoint: {args.url}")
+    base_url = args.base_url.rstrip("/")
 
+    print(f"Image:   {args.image}")
+    print(f"Base:    {base_url}")
+    if args.state:
+        print(f"State:   {args.state}")
+    if args.council:
+        print(f"Council: {args.council}")
+    print()
+
+    # Resize image
     try:
-        b64, media_type = resize_and_encode(args.image)
+        image_bytes = resize_image(args.image)
     except Exception as e:
         print(f"ERROR encoding image: {e}", file=sys.stderr)
         return 1
+    print(f"Encoded: {len(image_bytes):,} bytes JPEG")
 
-    print(f"→ Encoded:  {len(b64):,} chars base64 ({media_type})")
+    start = time.perf_counter()
 
+    # Step 1: Presign
+    print("\n[1/3] Requesting pre-signed URL…")
     try:
-        parsed, elapsed = call_api(args.url, b64, media_type, timeout=args.timeout)
-    except requests.Timeout:
-        print(f"ERROR: Request timed out after {args.timeout}s", file=sys.stderr)
-        return 1
+        upload_url, upload_fields, job_id = step_presign(base_url, args.state, args.council, args.timeout)
     except Exception as e:
-        print(f"ERROR calling API: {e}", file=sys.stderr)
+        print(f"ERROR: {e}", file=sys.stderr)
         return 1
 
-    print(f"→ Latency:  {elapsed * 1000:.0f} ms")
-    print(f"→ Response: {json.dumps(parsed, indent=2)}")
+    # Step 2: Upload
+    print("\n[2/3] Uploading to S3…")
+    try:
+        step_upload(upload_url, upload_fields, image_bytes, args.timeout)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
 
-    issues = validate(parsed)
+    # Step 3: Poll
+    print("\n[3/3] Polling for result…")
+    try:
+        result = step_poll(base_url, job_id, args.timeout)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    elapsed = time.perf_counter() - start
+    print(f"\nLatency: {elapsed * 1000:.0f} ms (total)")
+    print(f"Result:  {json.dumps(result, indent=2)}")
+
+    issues = validate(result)
     if issues:
         print("\n✗ FAILED:")
         for i in issues:
             print(f"  - {i}")
         return 1
 
-    print(f"\n✓ PASSED — bin = {parsed['bin']!r}")
+    print(f"\n✓ PASSED — bin = {result['bin']!r}, item = {result.get('item', '')!r}")
     return 0
 
 

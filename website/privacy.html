@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="/images/icon.png">
+  <title>SecureBin – Privacy Policy</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.7;
+      color: #1a1a2e;
+      max-width: 760px;
+      margin: 48px auto;
+      padding: 0 32px 64px;
+    }
+    h1 { font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+    h2 { font-size: 16px; font-weight: 700; margin-top: 32px; margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+    p  { margin: 8px 0; }
+    ul { margin: 8px 0 8px 20px; }
+    li { margin: 4px 0; }
+    .meta { font-size: 12px; color: #666; margin-bottom: 32px; }
+    a  { color: #2E7D32; }
+    code { background: #f1f5f1; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+    @media print { body { margin: 0; } }
+  </style>
+</head>
+<body>
+
+  <div style="display:flex; align-items:center; gap:12px; margin-bottom:8px;">
+    <img src="/images/icon.png" alt="SecureBin" style="width:40px; height:40px; object-fit:contain;" />
+    <h1 style="margin:0;">SecureBin – Privacy Policy</h1>
+  </div>
+  <p class="meta">
+    Last updated: May 3, 2026 &nbsp;·&nbsp; Version 1.0.1<br />
+    Developer: Saleem Khan &nbsp;·&nbsp;
+    <a href="/">https://securebin.websaleem.com</a>
+  </p>
+
+  <p>
+    SecureBin is a mobile application for iOS and Android that uses your device camera to photograph
+    waste items and classify which bin they belong to, using Amazon Bedrock's vision AI. Advice is
+    personalised to your Australian state and council. This policy explains exactly what data is
+    collected, where it is stored, what leaves your device, and what controls you have.
+  </p>
+
+  <div style="background-color: #fef2f2; border: 1px solid #fee2e2; padding: 16px; border-radius: 8px; margin: 24px 0;">
+    <h2 style="color: #b91c1c; margin-top: 0; border-bottom: none; font-size: 16px;">Disclaimer of Government Affiliation</h2>
+    <p style="color: #7f1d1d; margin-bottom: 0;"><strong>SecureBin is an independent application and does not represent, nor is it affiliated with, any government entity.</strong> The bin collection guidelines provided by this app are sourced from publicly available official Australian state and council authorities, including the ACT Government, NSW EPA, NT Government, Queensland Government, SA EPA, Tasmania EPA, Victoria EPA, Government of WA, and local council .gov.au websites.</p>
+  </div>
+
+  <h2>1. Data Collected</h2>
+  <p>SecureBin collects the following information:</p>
+  <ul>
+    <li><strong>Camera images</strong> — photos you take within the app. Only the area inside the 4:3 capture frame is processed; the full camera frame is never stored or transmitted.</li>
+    <li><strong>State and council</strong> — the Australian state/territory and local council you select in Settings. Used to personalise bin advice to your council's specific rules.</li>
+    <li><strong>Scan results</strong> — for each scan: the identified item name, bin category, reason, and a confidence score. Confidence is stored in the database but not shown in the app.</li>
+    <li><strong>Scan history</strong> — a locally stored record of past scans including the cropped image, item name, bin, and reason.</li>
+  </ul>
+  <p>SecureBin does <strong>not</strong> collect your name, email address, device identifiers, location coordinates (GPS), contacts, or any other personal information beyond what is listed above.</p>
+
+  <h2>2. Where Data Is Stored</h2>
+  <ul>
+    <li><strong>On your device</strong> — scan history (images and result records) is stored locally using AsyncStorage and the app's document directory. It persists until you tap "Clear All History" or uninstall the app.</li>
+    <li><strong>Location preference</strong> — your selected state and council are stored locally in AsyncStorage and never synced to a server.</li>
+    <li><strong>AWS DynamoDB</strong> — each scan job record (item name, bin, reason, confidence, state, council) is stored temporarily with a 24-hour TTL. Records expire automatically and are not retained beyond that period.</li>
+  </ul>
+
+  <h2>3. Data Sent Off Your Device</h2>
+  <p>When you tap the capture button, the following data is sent to the SecureBin backend:</p>
+  <ul>
+    <li>The cropped JPEG image (only the area inside the capture frame, resized to a maximum of 1024px wide)</li>
+    <li>Your selected state (e.g. <code>VIC</code>)</li>
+    <li>Your selected council name (e.g. <code>City of Melbourne</code>)</li>
+  </ul>
+  <p>
+    Requests flow through an AWS CloudFront distribution, signed by Origin Access Control (OAC)
+    using SigV4, to AWS Lambda function URLs. The image is stored temporarily in a private AWS S3
+    bucket, processed by a Processor Lambda that calls <strong>Amazon Bedrock</strong>
+    (Claude, APAC cross-region inference profile), and the result is written to DynamoDB.
+    The S3 image is deleted immediately after processing. The app polls for the result and
+    displays it locally. No image or result data is shared with any third party beyond the
+    AWS services described here.
+  </p>
+
+  <h2>4. Camera Permission</h2>
+  <p>
+    SecureBin requests access to your device camera solely to capture images for waste classification.
+    The camera is only activated when you are on the main scan screen. No photos are taken without
+    your explicit action (tapping the capture button). Images are not saved to your device photo
+    library unless you choose to do so separately.
+  </p>
+
+  <h2>5. Your Controls</h2>
+  <ul>
+    <li><strong>Clear scan history</strong> — tap "Clear All History" on the History screen to permanently delete all locally stored scan records and images.</li>
+    <li><strong>Update location</strong> — tap the Settings button (⚙) on the camera screen at any time to change your state and council. The new selection takes effect on the next scan.</li>
+    <li><strong>Uninstall</strong> — removing the app from your device deletes all locally stored data.</li>
+  </ul>
+
+  <h2>6. Data Retention</h2>
+  <ul>
+    <li><strong>On-device history</strong> — retained indefinitely until you clear it manually or uninstall the app.</li>
+    <li><strong>AWS DynamoDB job records</strong> — automatically expire after 24 hours via DynamoDB TTL.</li>
+    <li><strong>AWS S3 images</strong> — deleted immediately after the Processor Lambda reads and classifies the image. Images are not retained in S3.</li>
+  </ul>
+
+  <h2>7. Third-Party Services</h2>
+  <p>SecureBin uses the following AWS services to process scan requests:</p>
+  <ul>
+    <li><strong>Amazon CloudFront</strong> — CDN and HTTPS endpoint for all API requests.</li>
+    <li><strong>AWS Lambda</strong> — serverless functions for presigning URLs, retrieving results, and processing images.</li>
+    <li><strong>Amazon S3</strong> — temporary private storage for uploaded images (deleted post-processing).</li>
+    <li><strong>Amazon DynamoDB</strong> — temporary job tracking with 24-hour TTL.</li>
+    <li><strong>Amazon Bedrock</strong> — vision AI classification using the APAC cross-region inference profile (Sydney + Melbourne).</li>
+  </ul>
+  <p>
+    AWS's own privacy and data processing practices apply to data handled by these services.
+    No other third-party services receive data from SecureBin.
+  </p>
+
+  <h2>8. Children's Privacy</h2>
+  <p>
+    SecureBin is not directed at children under 13. We do not knowingly collect any information
+    from children. If you believe a child has provided information through the app, please contact us
+    so we can take appropriate action.
+  </p>
+
+  <h2>9. Changes to This Policy</h2>
+  <p>
+    If this policy is updated, the revised version will be published at
+    <a href="/privacy.html">https://securebin.websaleem.com/privacy.html</a>
+    with an updated date at the top of the document.
+  </p>
+
+  <h2>10. Contact</h2>
+  <p>
+    For questions or concerns about this privacy policy, please reach out via the
+    <a href="contact-support.html">Contact Support</a> page or visit
+    <a href="/">https://securebin.websaleem.com</a>.
+  </p>
+
+</body>
+</html>

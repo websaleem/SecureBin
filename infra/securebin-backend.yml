@@ -1,0 +1,288 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SecureBin Backend Infrastructure — DynamoDB, S3, Lambdas, and HTTP API
+
+Parameters:
+  BedrockModelId:
+    Type: String
+    Default: 'amazon.nova-pro-v1:0'
+    Description: The Bedrock model ID for image categorization
+
+Resources:
+  # ───────── DynamoDB Table ─────────
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: securebin-categorize-jobs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jobId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jobId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  # ───────── S3 Bucket ─────────
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: securebin-image-s3-uploads
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - PUT
+              - POST
+            AllowedOrigins:
+              - 'https://securebin.websaleem.com'
+              - 'https://dev.securebin.websaleem.com'
+              - 'https://securebin-dev-cdn.cloudfront.net'
+              - 'http://localhost:8081'
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteAfter1Day
+            Status: Enabled
+            ExpirationInDays: 1
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt CategorizeImageLambda.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+
+  UploadsBucketInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CategorizeImageLambda
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt UploadsBucket.Arn
+
+  # ───────── IAM Roles ─────────
+  GetPresignUrlRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GetPresignUrlPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt JobsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub "${UploadsBucket.Arn}/*"
+
+  CategorizeImageRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CategorizeImagePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt JobsTable.Arn
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "${UploadsBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: '*'
+
+  GetJobResultRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: GetJobResultPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: arn:aws:logs:*:*:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt JobsTable.Arn
+
+  # ───────── Lambda Functions ─────────
+  GetPresignUrlLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: sbGetPresignURL
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt GetPresignUrlRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code: ../lambda/get_presign_url/
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+          BUCKET_NAME: !Ref UploadsBucket
+
+  CategorizeImageLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: sbCategorizeImage
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt CategorizeImageRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      Code: ../lambda/categorize_image/
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+          MODEL_ID: !Ref BedrockModelId
+
+  GetJobResultLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: sbGetJobResult
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt GetJobResultRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code: ../lambda/get_job_result/
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+
+  # ───────── HTTP API Gateway ─────────
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: SecureBinHttpApi
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - 'https://securebin.websaleem.com'
+          - 'https://dev.securebin.websaleem.com'
+          - 'https://securebin-dev-cdn.cloudfront.net'
+          - 'http://localhost:8081'
+        AllowMethods:
+          - GET
+          - OPTIONS
+        AllowHeaders:
+          - '*'
+
+  # Integrations
+  GetPresignUrlIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GetPresignUrlLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  GetJobResultIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt GetJobResultLambda.Arn
+      PayloadFormatVersion: '2.0'
+
+  # Routes
+  GetPresignUrlRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /presign'
+      Target: !Sub "integrations/${GetPresignUrlIntegration}"
+
+  GetJobResultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /result/{jobId}'
+      Target: !Sub "integrations/${GetJobResultIntegration}"
+
+  # Stage
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: prod
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  # Permissions for API Gateway to invoke Lambdas
+  GetPresignUrlApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetPresignUrlLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/presign"
+
+  GetJobResultApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GetJobResultLambda
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/result/*"
+
+Outputs:
+  ApiEndpoint:
+    Description: Base URL for the SecureBin API
+    Value: !GetAtt HttpApi.ApiEndpoint
