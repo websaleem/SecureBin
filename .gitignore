@@ -50,3 +50,7 @@ yarn-error.*
 /android/app/.cxx/
 /android/app/debug.keystore
 /android/local.properties
+
+# python
+__pycache__/
+*.py[cod]
