@@ -39,6 +39,11 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: securebin-image-s3-uploads
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders:
