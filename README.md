@@ -1,4 +1,4 @@
-***REMOVED***
+# SecureBin
 
 A cross-platform mobile app (iOS + Android) that uses the device camera to photograph waste items and classifies which bin they belong to using Amazon Bedrock's vision AI. Advice is tailored to the user's **state and council** for accurate, location-specific bin guidance. No login required. Scan history is stored locally on the device.
 
