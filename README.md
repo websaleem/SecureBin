@@ -1,6 +1,6 @@
 # SecureBin
 
-A cross-platform mobile app (iOS + Android) that uses the device camera to photograph waste items and classifies which bin they belong to using Amazon Bedrock's vision AI. Advice is tailored to the user's **state and council** for accurate, location-specific bin guidance. No login required. Scan history is stored locally on the device.
+An Android mobile app that uses the device camera to photograph waste items and classifies which bin they belong to using Amazon Bedrock's vision AI. Advice is tailored to the user's **state and council** for accurate, location-specific bin guidance. No login required. Scan history is stored locally on the device.
 
 ---
 
@@ -8,7 +8,7 @@ A cross-platform mobile app (iOS + Android) that uses the device camera to photo
 
 ```mermaid
 flowchart TD
-    subgraph App["📱 Mobile App (iOS / Android)"]
+    subgraph App["📱 Mobile App (Android)"]
         Camera["Camera\nexpo-camera"]
         Crop["Frame Crop\nexpo-image-manipulator\ncrops to 4:3 reticle · max 1024px · JPEG"]
         Cat["categorizer.ts\n3-step upload flow\nincludes state + council"]
@@ -197,7 +197,7 @@ sequenceDiagram
 | Navigation | Expo Router (file-based stack) |
 | Camera | `expo-camera` |
 | Image processing | `expo-image-manipulator` — crop to reticle + resize |
-| UI effects | `expo-blur` — frosted glass panels (UIVisualEffectView on iOS) |
+| UI effects | `expo-blur` — frosted glass panels (RenderEffect on Android) |
 | Local storage | `@react-native-async-storage/async-storage` + `expo-file-system/next` |
 | Edge | AWS CloudFront + Origin Access Control (OAC) |
 | API | AWS Lambda function URLs (Auth: AWS_IAM) |
@@ -294,9 +294,6 @@ npm install
 # Start Expo dev server
 npx expo start
 
-# Run on iOS simulator
-npx expo run:ios
-
 # Run on Android device / emulator
 npx expo run:android
 
@@ -361,14 +358,14 @@ The pipelines fetch the following secrets from AWS Secrets Manager (stored under
 
 ## Platform Notes
 
-- Camera permissions declared in `app.json` under `ios.infoPlist` and via the `expo-camera` plugin for Android
+- Camera permissions declared in `app.json` under `android.permissions` and via the `expo-camera` plugin
 - `android.minSdkVersion` set to `24` (required for camera2 API)
 - `RECORD_AUDIO` intentionally omitted — SecureBin never records audio
 - `scheme` set to `"securebin"` in `app.json` — required by Expo Router for deep-linking in production builds
 - Captured image is **cropped to the 4:3 reticle frame** before upload — only what the user frames is sent to Bedrock
 - Images downscaled to max 1024px wide before upload to control latency and Bedrock cost
 - Scan images stored in the app's document directory (`scan_images/`) — persist across restarts, cleared when user taps "Clear All History"
-- `expo-blur` uses `UIVisualEffectView` on iOS for native glass blur; uses `RenderEffect` on Android
+- `expo-blur` uses `RenderEffect` on Android for native glass blur
 - The `confidence` value is stored in DynamoDB and used internally but not shown to the user — the identified **item name** is displayed instead
 
 ---

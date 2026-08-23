@@ -12,13 +12,6 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "ios": {
-      "supportsTablet": true,
-      "infoPlist": {
-        "NSCameraUsageDescription": "SecureBin uses the camera to photograph items for bin classification.",
-        "NSPhotoLibraryUsageDescription": "SecureBin saves scan images to your device."
-      }
-    },
     "android": {
       "versionCode": 5,
       "adaptiveIcon": {
