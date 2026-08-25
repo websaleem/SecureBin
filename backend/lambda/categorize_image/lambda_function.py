@@ -16,8 +16,9 @@ _bedrock = boto3.client("bedrock-runtime", region_name=_region)
 _ddb = boto3.client("dynamodb", region_name=_region)
 
 TABLE = os.environ["TABLE_NAME"]
-# Default Amazon Nova Pro model for high-accuracy reasoning
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-pro-v1:0")
+# Fallback must match a model the execution role is allowed to invoke; the
+# securebin-categorize-role policy is scoped to Nova Lite only.
+MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 
 # All bin / disposal colours SecureBin can return
 VALID_BINS = {
