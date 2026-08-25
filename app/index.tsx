@@ -106,7 +106,7 @@ export default function CameraScreen() {
       console.error('Categorization error:', err);
       Alert.alert(
         'Categorization Failed',
-        err.message || 'Could not categorize the item. Please try again with a clearer photo.',
+        err.message || 'Could not categorize the item. Please try again.',
         [{ text: 'OK' }]
       );
     } finally {

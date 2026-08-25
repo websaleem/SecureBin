@@ -31,6 +31,55 @@ VALID_BINS = {
     "grey",     # unsure / ambiguous — prompt user for more info
 }
 
+# Failure classes. The user-facing text is returned to the client verbatim by the
+# /result endpoint, so it must never carry internal AWS detail — that goes to
+# CloudWatch and to the non-returned errorDetail attribute.
+UNCLEAR_IMAGE = (
+    "UNCLEAR_IMAGE",
+    "Could not categorize the item. Please try again with a clearer photo.",
+)
+MODEL_BUSY = (
+    "MODEL_BUSY",
+    "SecureBin is busy right now. Please try again in a moment.",
+)
+INTERNAL_ERROR = (
+    "INTERNAL_ERROR",
+    "SecureBin could not complete the scan due to a problem on our end. "
+    "This is not a problem with your photo.",
+)
+
+# Bedrock/botocore error codes that mean "retry later", not "bad image".
+_BUSY_ERROR_CODES = {
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "ServiceQuotaExceededException",
+    "ServiceUnavailableException",
+    "ModelTimeoutException",
+    "ModelNotReadyException",
+}
+
+
+class ImageUnclearError(Exception):
+    """The model responded, but its answer was unusable for this image."""
+
+
+def _classify_failure(exc):
+    """Map an exception to a (code, user_message) pair.
+
+    Only genuine model-output problems are reported as a photo problem. Access
+    denials, misconfiguration and throttling are reported as server-side faults
+    so users are not told to retake a photo that was never the cause.
+    """
+    if isinstance(exc, ImageUnclearError):
+        return UNCLEAR_IMAGE
+    error_code = None
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        error_code = response.get("Error", {}).get("Code")
+    if error_code in _BUSY_ERROR_CODES:
+        return MODEL_BUSY
+    return INTERNAL_ERROR
+
 def _unwrap_ddb_value(attr):
     """Convert a DynamoDB typed attribute into a plain Python value."""
     if "S" in attr:
@@ -177,7 +226,7 @@ def _extract_result(text, job_id, request_id):
             "Could not parse JSON from response | jobId=%s | text=%r | request_id=%s",
             job_id, text, request_id,
         )
-        raise ValueError(f"Could not parse response as JSON: {text!r}")
+        raise ImageUnclearError(f"Could not parse response as JSON: {text!r}")
 
     # 4. Extract and normalize fields
     bin_value = obj.get("bin", "").strip().lower() if isinstance(obj.get("bin"), str) else ""
@@ -201,7 +250,7 @@ def _extract_result(text, job_id, request_id):
             "Missing bin in parsed response | jobId=%s | obj=%s | request_id=%s",
             job_id, obj, request_id,
         )
-        raise ValueError(f"Response missing 'bin' field: {obj}")
+        raise ImageUnclearError(f"Response missing 'bin' field: {obj}")
 
     return {"bin": bin_value, "item": item, "reason": reason, "confidence": confidence}
 
@@ -372,7 +421,9 @@ def lambda_handler(event, context):
                 )
                 _update_job_status(
                     job_id, "failed", request_id,
-                    error=f"Invalid bin: {result['bin']!r}",
+                    error=UNCLEAR_IMAGE[1],
+                    errorCode=UNCLEAR_IMAGE[0],
+                    errorDetail=f"model returned invalid bin {result['bin']!r}",
                 )
                 continue
 
@@ -396,9 +447,20 @@ def lambda_handler(event, context):
                 "Categorization failed | jobId=%s | request_id=%s",
                 job_id, request_id,
             )
-            # Record the failure in DynamoDB so the client polling /result sees it
+            # Record the failure in DynamoDB so the client polling /result sees it.
+            # errorDetail is stored for operators and is not returned by /result.
+            error_code, user_message = _classify_failure(e)
+            logger.error(
+                "Job failed | jobId=%s | errorCode=%s | detail=%s | request_id=%s",
+                job_id, error_code, f"{type(e).__name__}: {e}", request_id,
+            )
             try:
-                _update_job_status(job_id, "failed", request_id, error="Categorization failed. Please try again with a clearer photo.")
+                _update_job_status(
+                    job_id, "failed", request_id,
+                    error=user_message,
+                    errorCode=error_code,
+                    errorDetail=f"{type(e).__name__}: {e}"[:900],
+                )
             except Exception:
                 logger.exception(
                     "Failed to record failure status | jobId=%s | request_id=%s",

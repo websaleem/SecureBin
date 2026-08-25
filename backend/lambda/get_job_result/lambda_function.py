@@ -105,9 +105,14 @@ def lambda_handler(event, context):
             )
         elif status == "failed":
             out["error"] = item.get("error", {}).get("S", "unknown")
+            # errorCode lets the client distinguish a genuine image problem from a
+            # server-side fault. errorDetail is deliberately NOT returned — it is
+            # for operators only and may carry internal infrastructure detail.
+            out["errorCode"] = item.get("errorCode", {}).get("S", "INTERNAL_ERROR")
             logger.warning(
-                "Job failed | jobId=%s | error=%s | request_id=%s",
-                job_id, out["error"], request_id,
+                "Job failed | jobId=%s | errorCode=%s | error=%s | detail=%s | request_id=%s",
+                job_id, out["errorCode"], out["error"],
+                item.get("errorDetail", {}).get("S", ""), request_id,
             )
         else:
             logger.info(

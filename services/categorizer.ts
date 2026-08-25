@@ -19,6 +19,7 @@ type JobResult = {
   reason?: string;
   confidence?: number;
   error?: string;
+  errorCode?: 'UNCLEAR_IMAGE' | 'MODEL_BUSY' | 'INTERNAL_ERROR';
 };
 
 async function resizeImage(imageUri: string): Promise<string> {
@@ -125,7 +126,11 @@ export async function categorizeImage(imageUri: string): Promise<CategorizationR
       };
     }
     if (data.status === 'failed') {
-      throw new Error(`Categorization failed: ${data.error ?? 'unknown'}`);
+      // The backend already returns a user-safe message tailored to the failure
+      // class, so surface it as-is rather than prefixing it with our own guess.
+      throw new Error(
+        data.error ?? 'Could not categorize the item. Please try again.',
+      );
     }
   }
 
