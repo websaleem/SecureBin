@@ -214,7 +214,7 @@ def _extract_result(text, job_id, request_id):
 
     # 3. Fall back to extracting any {...} block from the text
     if obj is None:
-        match = re.search(r'\{.*?\}', cleaned, re.DOTALL)
+        match = re.search(r'\{.*\}', cleaned, re.DOTALL)  # greedy: tolerate nested objects
         if match:
             try:
                 obj = json.loads(match.group(0))
@@ -266,16 +266,46 @@ blue: Drop-off required (e-waste, batteries, chemicals — take to a collection 
 orange: Still has life. Clothes, furniture, working electronics — charity bin or marketplace.
 grey: Categorization failed or item is ambiguous. Prompt user for more info."""
 
+# Defence in depth: presign validates at the boundary, but rows written before
+# that validation existed can still hold arbitrary text. Re-check here, right
+# before the values reach the prompt.
+try:
+    from councils import COUNCILS
+except ImportError:  # pragma: no cover - packaging safety net
+    COUNCILS = {}
+    logger.error("councils allowlist missing from deployment package")
+
+ALLOWED_STATES = set(COUNCILS) or {
+    "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA",
+}
+
+
+def _validate_location(state, council):
+    """Return (state, council) only if they are an exact known pair.
+
+    Anything else degrades to ("", ""), which the categorizer treats as
+    'location unknown' — never as free text to embed in the prompt.
+    """
+    state = (state or "").strip().upper()
+    council = " ".join((council or "").split())
+    if state not in ALLOWED_STATES:
+        return "", ""
+    if council not in COUNCILS.get(state, ()):
+        return "", ""
+    return state, council
+
+
 def _categorize_image(image_bytes, media_type, council, state, job_id, request_id):
 
     # create location context
+    state, council = _validate_location(state, council)
     location_ctx = ""
     if council and state:
-        location_ctx = (                                                          
+        location_ctx = (
             f"The user is in {council}, {state}, Australia. "
             f"Apply {council}'s specific bin collection rules where known."
         )
-    else:                                  
+    else:
         location_ctx = "Location unknown. Use general Australian bin guidelines." 
 
     """Invoke Bedrock and return the bin value."""

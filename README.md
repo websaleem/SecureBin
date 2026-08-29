@@ -366,7 +366,12 @@ The pipelines fetch the following secrets from AWS Secrets Manager (stored under
 - Images downscaled to max 1024px wide before upload to control latency and Bedrock cost
 - Scan images stored in the app's document directory (`scan_images/`) — persist across restarts, cleared when user taps "Clear All History"
 - `expo-blur` uses `RenderEffect` on Android for native glass blur
-- The `confidence` value is stored in DynamoDB and used internally but not shown to the user — the identified **item name** is displayed instead
+- The `confidence` value is stored in DynamoDB and shown on the result screen as
+  "AI Confidence: N%" (see `components/BinResult.tsx`), alongside the identified **item name**
+- The user-supplied `state`/`council` pair is validated against the exact allowlist in
+  `backend/lambda/shared/councils.py` before it reaches the Bedrock prompt. Regenerate that
+  file with `python3 scripts/gen_councils.py` after editing `constants/councils.ts`, and
+  include it in both Lambda deployment packages
 
 ---
 

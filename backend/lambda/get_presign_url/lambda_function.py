@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 import uuid
 import boto3
@@ -24,13 +25,34 @@ EXPIRES = 300
 TTL_HOURS = 24
 ALLOWED_MEDIA = {"image/jpeg", "image/png", "image/webp"}
 
+# state/council are attacker-controlled and end up interpolated into the Bedrock
+# prompt. Character filtering is not sufficient — a payload can be spelled with
+# ordinary letters — so validate against the exact council allowlist generated
+# from constants/councils.ts.
+try:
+    from councils import COUNCILS
+except ImportError:  # pragma: no cover - packaging safety net
+    COUNCILS = {}
+    logger.error("councils allowlist missing from deployment package")
 
-def _json(status, obj):
-    return {
-        "statusCode": status,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(obj),
-    }
+ALLOWED_STATES = set(COUNCILS) or {
+    "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA",
+}
+
+
+def _validate_location(state, council):
+    """Return (state, council) only if they are an exact known pair.
+
+    Anything else degrades to ("", ""), which the categorizer treats as
+    'location unknown' — never as free text to embed in the prompt.
+    """
+    state = (state or "").strip().upper()
+    council = " ".join((council or "").split())
+    if state not in ALLOWED_STATES:
+        return "", ""
+    if council not in COUNCILS.get(state, ()):
+        return "", ""
+    return state, council
 
 
 def lambda_handler(event, context):
@@ -41,8 +63,14 @@ def lambda_handler(event, context):
         # Step 1: parse mediaType from query string
         params = event.get("queryStringParameters") or {}                     
         media_type = params.get("mediaType")
-        state = params.get("state") or ""
-        council = params.get("council") or ""
+        raw_state = params.get("state") or ""
+        raw_council = params.get("council") or ""
+        state, council = _validate_location(raw_state, raw_council)
+        if (raw_state or raw_council) and not (state and council):
+            logger.warning(
+                "Rejected location input | request_id=%s | raw_state=%r | raw_council=%r",
+                request_id, raw_state[:120], raw_council[:120],
+            )
         logger.info("Parsed request | request_id=%s | mediaType=%s | council=%s | state=%s", request_id, media_type, council, state)  
 
         # Step 2: validate mediaType
