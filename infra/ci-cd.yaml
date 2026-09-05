@@ -15,6 +15,12 @@ Parameters:
   NotificationEmail:
     Type: String
     Description: Email address for build notifications
+  ProdCloudFrontDistId:
+    Type: String
+    Description: CloudFront distribution ID for securebin.websaleem.com
+  DevCloudFrontDistId:
+    Type: String
+    Description: CloudFront distribution ID for dev.securebin.websaleem.com
     
 Resources:
   ArtifactsBucket:
@@ -24,6 +30,29 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub "${ArtifactsBucket.Arn}/*"
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
 
   CodeBuildServiceRole:
     Type: AWS::IAM::Role
@@ -48,9 +77,22 @@ Resources:
                 Resource: '*'
               - Effect: Allow
                 Action:
+                  # GetParameter (singular) backs `aws ssm get-parameter`, used
+                  # inline by the buildspecs; GetParameters (plural) backs the
+                  # buildspec `parameter-store` block. Both are required.
+                  - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: 
                   - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/securebin/*"
+              - Effect: Allow
+                # SecureString parameters (keystore, passwords, service account)
+                # cannot be read without decrypt rights on the SSM default key.
+                Action:
+                  - kms:Decrypt
+                Resource: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+                Condition:
+                  StringEquals:
+                    'kms:ViaService': !Sub "ssm.${AWS::Region}.amazonaws.com"
               - Effect: Allow
                 Action:
                   - s3:PutObject
@@ -70,10 +112,9 @@ Resources:
               - Effect: Allow
                 Action:
                   - cloudfront:CreateInvalidation
-                Resource: 
-                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/SECUREBIN_PROD_CF_DIST_ID"
-                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/SECUREBIN_DEV_CF_DIST_ID"
-                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/*"
+                Resource:
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${ProdCloudFrontDistId}"
+                  - !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DevCloudFrontDistId}"
 
   CodePipelineServiceRole:
     Type: AWS::IAM::Role
@@ -104,7 +145,7 @@ Resources:
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource: '*'
+                Resource: !GetAtt SecureBinBuildProject.Arn
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection

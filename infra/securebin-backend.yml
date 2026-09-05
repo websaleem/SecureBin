@@ -14,6 +14,32 @@ Parameters:
     Type: String
     Default: 'https://dev.securebin.websaleem.com'
     Description: Development CloudFront Origin URL
+  CategorizeMaxConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+    Description: >-
+      Reserved concurrency for the Bedrock-invoking Processor Lambda. This is
+      the hard ceiling on parallel model calls, and therefore on spend rate.
+  UploadsBucketName:
+    Type: String
+    Default: 'securebin-image-s3-uploads'
+    Description: >-
+      Name of the uploads bucket. IAM policies and the S3 invoke permission
+      build this ARN from the name rather than !GetAtt, because the bucket's
+      notification config already points at the Processor Lambda and a GetAtt
+      would close a circular dependency (bucket -> lambda -> role -> bucket).
+  AllowLocalhostOrigin:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Whether http://localhost:8081 is an accepted CORS origin. Must stay
+      'false' in production; set 'true' only on a development stack.
+
+Conditions:
+  IncludeLocalhostOrigin: !Equals [!Ref AllowLocalhostOrigin, 'true']
 
 Resources:
   # ───────── DynamoDB Table ─────────
@@ -38,7 +64,7 @@ Resources:
   UploadsBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: securebin-image-s3-uploads
+      BucketName: !Ref UploadsBucketName
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -51,18 +77,26 @@ Resources:
             AllowedMethods:
               - PUT
               - POST
-            AllowedOrigins:
-              - 'https://securebin.websaleem.com'
-              - 'https://dev.securebin.websaleem.com'
-              - !Ref ProdCloudFrontUrl
-              - !Ref DevCloudFrontUrl
-              - 'http://localhost:8081'
+            AllowedOrigins: !If
+              - IncludeLocalhostOrigin
+              - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl, 'http://localhost:8081']
+              - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl]
             MaxAge: 3600
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       LifecycleConfiguration:
         Rules:
+          # Backstop only — the Processor Lambda deletes each object as soon as
+          # it has been classified, per the published privacy policy.
           - Id: DeleteAfter1Day
             Status: Enabled
             ExpirationInDays: 1
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
@@ -73,13 +107,32 @@ Resources:
                   - Name: prefix
                     Value: uploads/
 
+  UploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UploadsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub "arn:aws:s3:::${UploadsBucketName}"
+              - !Sub "arn:aws:s3:::${UploadsBucketName}/*"
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
   UploadsBucketInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref CategorizeImageLambda
       Principal: s3.amazonaws.com
-      SourceArn: !GetAtt UploadsBucket.Arn
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::${UploadsBucketName}"
 
   # ───────── IAM Roles ─────────
   GetPresignUrlRole:
@@ -110,7 +163,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:PutObject
-                Resource: !Sub "${UploadsBucket.Arn}/*"
+                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/*"
 
   CategorizeImageRole:
     Type: AWS::IAM::Role
@@ -141,7 +194,12 @@ Resources:
               - Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub "${UploadsBucket.Arn}/*"
+                  - s3:DeleteObject
+                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt CategorizeImageDLQ.Arn
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
@@ -185,11 +243,19 @@ Resources:
       Role: !GetAtt GetPresignUrlRole.Arn
       Timeout: 10
       MemorySize: 256
-      Code: ../lambda/get_presign_url/
+      # Staged by scripts/package_lambdas.sh — includes shared/councils.py
+      Code: ../build/get_presign_url/
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTable
-          BUCKET_NAME: !Ref UploadsBucket
+          BUCKET_NAME: !Ref UploadsBucketName
+
+  CategorizeImageDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: securebin-categorize-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
 
   CategorizeImageLambda:
     Type: AWS::Lambda::Function
@@ -200,7 +266,13 @@ Resources:
       Role: !GetAtt CategorizeImageRole.Arn
       Timeout: 30
       MemorySize: 512
-      Code: ../lambda/categorize_image/
+      # This is the only function that spends money per invocation. Cap it so a
+      # burst of uploads cannot run up an unbounded Bedrock bill.
+      ReservedConcurrentExecutions: !Ref CategorizeMaxConcurrency
+      DeadLetterConfig:
+        TargetArn: !GetAtt CategorizeImageDLQ.Arn
+      # Staged by scripts/package_lambdas.sh — includes shared/councils.py
+      Code: ../build/categorize_image/
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTable
@@ -215,7 +287,7 @@ Resources:
       Role: !GetAtt GetJobResultRole.Arn
       Timeout: 10
       MemorySize: 256
-      Code: ../lambda/get_job_result/
+      Code: ../build/get_job_result/
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTable
@@ -227,12 +299,10 @@ Resources:
       Name: SecureBinHttpApi
       ProtocolType: HTTP
       CorsConfiguration:
-        AllowOrigins:
-          - 'https://securebin.websaleem.com'
-          - 'https://dev.securebin.websaleem.com'
-          - !Ref ProdCloudFrontUrl
-          - !Ref DevCloudFrontUrl
-          - 'http://localhost:8081'
+        AllowOrigins: !If
+          - IncludeLocalhostOrigin
+          - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl, 'http://localhost:8081']
+          - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl]
         AllowMethods:
           - GET
           - OPTIONS
@@ -281,6 +351,15 @@ Resources:
       DefaultRouteSettings:
         ThrottlingBurstLimit: 20
         ThrottlingRateLimit: 10
+      RouteSettings:
+        # /presign is the entry point to the billable pipeline, so it is held
+        # well below the stage default. /result is cheap and polled 30x per scan.
+        'GET /presign':
+          ThrottlingBurstLimit: 10
+          ThrottlingRateLimit: 5
+        'GET /result/{jobId}':
+          ThrottlingBurstLimit: 40
+          ThrottlingRateLimit: 20
 
   # Permissions for API Gateway to invoke Lambdas
   GetPresignUrlApiPermission:
@@ -299,7 +378,54 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/result/*"
 
+  # ───────── CloudFront Security Headers ─────────
+  # Attach this policy to the website distribution's default cache behaviour.
+  # The distribution itself is managed outside this template.
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: SecureBinSecurityHeaders
+        Comment: Baseline security headers for the SecureBin marketing site
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Preload: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+          ContentSecurityPolicy:
+            Override: true
+            ContentSecurityPolicy: >-
+              default-src 'self';
+              script-src 'self' 'unsafe-inline';
+              style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+              font-src 'self' https://cdnjs.cloudflare.com;
+              img-src 'self' data:;
+              connect-src 'self' https://formspree.io;
+              frame-ancestors 'none';
+              base-uri 'self';
+              form-action https://formspree.io
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()'
+              Override: true
+
 Outputs:
   ApiEndpoint:
     Description: Base URL for the SecureBin API
     Value: !GetAtt HttpApi.ApiEndpoint
+  SecurityHeadersPolicyId:
+    Description: Attach to the website CloudFront distribution's cache behaviour
+    Value: !Ref SecurityHeadersPolicy
+  CategorizeDLQUrl:
+    Description: Dead-letter queue for Processor Lambda invocations that never succeeded
+    Value: !Ref CategorizeImageDLQ
