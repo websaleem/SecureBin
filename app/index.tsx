@@ -1,4 +1,5 @@
 import { CameraView } from 'expo-camera';
+import { File } from 'expo-file-system';
 import { BlurView } from 'expo-blur';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
@@ -76,6 +77,7 @@ export default function CameraScreen() {
     const { uri } = await manipulated.saveAsync({ compress: 0.9, format: SaveFormat.JPEG });
 
     setIsClassifying(true);
+    let tempUri: string | null = uri;
     try {
       const result = await categorizeImage(uri);
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -110,6 +112,19 @@ export default function CameraScreen() {
         [{ text: 'OK' }]
       );
     } finally {
+      // The cropped frame has been copied into scan_images (or the scan failed
+      // and it is not needed at all). Drop the cache copy either way so the
+      // cache directory does not accumulate one JPEG per scan.
+      if (tempUri) {
+        try {
+          const f = new File(tempUri);
+          if (f.exists) f.delete();
+        } catch {
+          // Already gone — nothing to do.
+        }
+        tempUri = null;
+      }
+
       // Small artificial cooldown to allow Android OS and OkHttp connection pool 
       // to cleanly release file handles and sockets before allowing the next scan.
       setTimeout(() => {
