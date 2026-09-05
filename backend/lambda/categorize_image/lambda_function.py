@@ -16,6 +16,15 @@ _bedrock = boto3.client("bedrock-runtime", region_name=_region)
 _ddb = boto3.client("dynamodb", region_name=_region)
 
 TABLE = os.environ["TABLE_NAME"]
+
+# The model authors `item` and `reason` freely. They are stored and handed back
+# to clients, so cap them here rather than trusting the prompt's length request.
+MAX_ITEM_LEN = 80
+MAX_REASON_LEN = 200
+
+# A claim older than this is treated as abandoned. It must exceed the function
+# timeout, so a still-running invocation is never overtaken by its own retry.
+STALE_CLAIM_SECONDS = 120
 # Fallback must match a model the execution role is allowed to invoke; the
 # securebin-categorize-role policy is scoped to Nova Lite only.
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
@@ -145,6 +154,66 @@ def _get_job_fields(job_id, fields, request_id):
         job_id, fields, list(result.keys()), request_id,
     )
     return result
+
+def _claim_job(job_id, request_id):
+    """Move a job from `pending` to `processing`, once.
+
+    S3 event notifications are at-least-once, so the same object can invoke this
+    Lambda more than once. The conditional write means only the first delivery
+    proceeds to Bedrock; later ones are dropped instead of re-billing the model.
+    Returns True if this invocation owns the job.
+    """
+    now = int(time.time())
+    try:
+        _ddb.update_item(
+            TableName=TABLE,
+            Key={"jobId": {"S": job_id}},
+            UpdateExpression="SET #s = :processing, claimedAt = :now",
+            # Claim a pending job, or reclaim one whose owner died mid-flight
+            # (a timeout leaves the row stuck in `processing` forever otherwise).
+            ConditionExpression=(
+                "attribute_exists(jobId) AND ("
+                "#s = :pending OR (#s = :processing AND claimedAt <= :stale)"
+                ")"
+            ),
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":processing": {"S": "processing"},
+                ":pending": {"S": "pending"},
+                ":now": {"N": str(now)},
+                ":stale": {"N": str(now - STALE_CLAIM_SECONDS)},
+            },
+        )
+        return True
+    except _ddb.exceptions.ConditionalCheckFailedException:
+        logger.warning(
+            "Job already claimed or missing — skipping duplicate delivery | "
+            "jobId=%s | request_id=%s",
+            job_id, request_id,
+        )
+        return False
+
+
+def _delete_upload(bucket, key, job_id, request_id):
+    """Delete the uploaded image from S3.
+
+    The privacy policy states images are deleted immediately after processing,
+    so this runs on every path — success and failure alike. The bucket lifecycle
+    rule remains only as a backstop for objects this never reaches.
+    """
+    try:
+        _s3.delete_object(Bucket=bucket, Key=key)
+        logger.info(
+            "S3 upload deleted | jobId=%s | bucket=%s | key=%s | request_id=%s",
+            job_id, bucket, key, request_id,
+        )
+    except Exception:
+        logger.exception(
+            "S3 delete failed — object will be removed by the lifecycle rule | "
+            "jobId=%s | bucket=%s | key=%s | request_id=%s",
+            job_id, bucket, key, request_id,
+        )
+
 
 def _update_job_status(job_id, status, request_id, **extra):
     """Update the DynamoDB row for a job."""
@@ -414,8 +483,12 @@ def lambda_handler(event, context):
             i, bucket, key, size, job_id, request_id,
         )
 
+        # Step 3: claim the job so a duplicate S3 delivery cannot re-run Bedrock
+        if not _claim_job(job_id, request_id):
+            continue
+
         try:
-            # Step 3: fetch image from S3
+            # Step 4: fetch image from S3
             try:
                 obj = _s3.get_object(Bucket=bucket, Key=key)
                 image_bytes = obj["Body"].read()
@@ -431,7 +504,7 @@ def lambda_handler(event, context):
                 )
                 raise
 
-            # Step 4: get state and council name from db
+            # Step 5: get state and council name from db
             fields = _get_job_fields(job_id, ["state", "council"], request_id)
             state = fields.get("state")
             council = fields.get("council")
@@ -441,10 +514,10 @@ def lambda_handler(event, context):
                 job_id, state, council, request_id,
             )
 
-            # Step 5: categorize image via Bedrock
+            # Step 6: categorize image via Bedrock
             result = _categorize_image(image_bytes, media_type, council, state, job_id, request_id)
 
-            # Step 6: validate bin value
+            # Step 7: validate bin value
             if result["bin"] not in VALID_BINS:
                 logger.warning(
                     "Invalid bin from model | jobId=%s | bin=%r | valid=%s | request_id=%s",
@@ -458,11 +531,11 @@ def lambda_handler(event, context):
                 )
                 continue
 
-            # Step 7: write success to DynamoDB  — include reason and confidence
+            # Step 8: write success to DynamoDB  — include reason and confidence
             extras = {
                 "bin": result["bin"],
-                "item":   result.get("item", ""),
-                "reason": result["reason"],
+                "item":   result.get("item", "")[:MAX_ITEM_LEN],
+                "reason": result["reason"][:MAX_REASON_LEN],
             }
             if result["confidence"] is not None:
                 extras["confidence"] = result["confidence"]
@@ -497,6 +570,11 @@ def lambda_handler(event, context):
                     "Failed to record failure status | jobId=%s | request_id=%s",
                     job_id, request_id,
                 )
+
+        finally:
+            # The image has served its purpose either way — remove it now rather
+            # than leaving it for the next daily lifecycle sweep.
+            _delete_upload(bucket, key, job_id, request_id)
 
     logger.info("categorization completed | request_id=%s", request_id)
     return {"ok": True}
