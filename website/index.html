@@ -3,9 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; font-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; connect-src 'self' https://formspree.io; form-action https://formspree.io; base-uri 'self'; object-src 'none'">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
     <link rel="icon" type="image/png" href="/images/icon.png">
     <title>SecureBin | AI-Powered Waste Categorization for Australia</title>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet"
+        integrity="sha512-9usAa10IRO0HhonpyAIVpjrylPvoDwiPUiKdWk5t3PyolY1cOd4DSE0Ga+ri4AuTroPR5aQvXU9xC6qOPnzFeg=="
+        crossorigin="anonymous" referrerpolicy="no-referrer">
     <style>
         :root {
             --primary: #4CAF50;
@@ -289,7 +293,7 @@
             <div class="card">
                 <i class="fas fa-brain"></i>
                 <h3>Amazon Bedrock Vision AI</h3>
-                <p>Powered by Claude on Amazon Bedrock's APAC cross-region inference profile (Sydney + Melbourne). The model identifies the item, selects the correct bin from 8 categories, and provides a one-sentence reason — every scan.</p>
+                <p>Powered by Amazon Nova Lite on Amazon Bedrock, hosted in AWS Asia Pacific (Sydney). The model identifies the item, selects the correct bin from 8 categories, and provides a one-sentence reason — every scan.</p>
             </div>
             <div class="card">
                 <i class="fas fa-map-marker-alt"></i>
@@ -431,7 +435,7 @@
                 <div class="pipeline-step">
                     <i class="fas fa-brain"></i>
                     <h4>Bedrock AI</h4>
-                    <p>S3 event triggers Lambda. Reads council from DynamoDB. Sends council-aware vision prompt to Claude.</p>
+                    <p>S3 event triggers Lambda. Reads council from DynamoDB. Sends council-aware vision prompt to Nova Lite, then deletes the image.</p>
                 </div>
                 <div class="pipeline-arrow"><i class="fas fa-chevron-right"></i></div>
                 <div class="pipeline-step">

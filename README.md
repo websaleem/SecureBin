@@ -30,7 +30,7 @@ flowchart TD
 
         S3["S3 Bucket  (private)\nUUID-keyed objects\nContentType enforced\nPUT URL expires in 5 min"]
         DDB["DynamoDB\njobId → { state, council, bin, item, reason, confidence }\nTTL: 24 h"]
-        Bedrock["Amazon Bedrock\napac.claude-haiku-4-5-20251001\nCross-region inference profile\nAU (Sydney + Melbourne)"]
+        Bedrock["Amazon Bedrock\namazon.nova-lite-v1:0\nCross-region inference profile\nAU (Sydney + Melbourne)"]
     end
 
     Location -->|"state + council"| Cat
@@ -90,7 +90,7 @@ flowchart TB
         end
 
         subgraph AI["AI  (APAC Cross-Region Inference)"]
-            APAC["APAC Inference Profile\napac.claude-haiku-4-5-20251001\n─────────────\nRoutes between:\n  ap-southeast-2 Sydney\n  ap-southeast-4 Melbourne\nVision: base64 JPEG\nOutput: JSON\n  bin · item · reason · confidence"]
+            APAC["APAC Inference Profile\namazon.nova-lite-v1:0\n─────────────\nRoutes between:\n  ap-southeast-2 Sydney\n  ap-southeast-4 Melbourne\nVision: base64 JPEG\nOutput: JSON\n  bin · item · reason · confidence"]
         end
 
         subgraph IAM["IAM"]
@@ -203,7 +203,7 @@ sequenceDiagram
 | API | AWS Lambda function URLs (Auth: AWS_IAM) |
 | Storage | AWS S3 (private bucket) |
 | Database | AWS DynamoDB (TTL 24 h) |
-| AI | Amazon Bedrock — `apac.anthropic.claude-haiku-4-5-20251001` (APAC cross-region inference) |
+| AI | Amazon Bedrock — `amazon.nova-lite-v1:0` |
 | Language | TypeScript |
 
 ---
