@@ -6,7 +6,6 @@ env:
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
     UPLOAD_KEY_ALIAS: "/securebin/upload-key-alias"
     UPLOAD_KEY_PASSWORD: "/securebin/upload-key-password"
-    API_BASE_URL: "/securebin/dev/api-base-url"
 
 phases:
   install:
@@ -22,16 +21,26 @@ phases:
           export SSM_PREFIX=/securebin/prod
           export TARGET_BUCKET=securebin.websaleem.com
           export ENV_FILE=.env.production
-          export DEFAULT_CF_DIST_ID="SECUREBIN_PROD_CF_DIST_ID"
         else
           echo "=== Configuring for DEVELOPMENT (dev branch) ==="
           export SSM_PREFIX=/securebin/dev
           export TARGET_BUCKET=dev.securebin.websaleem.com
           export ENV_FILE=.env.development
-          export DEFAULT_CF_DIST_ID="SECUREBIN_DEV_CF_DIST_ID"
         fi
-        export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || aws ssm get-parameter --name /securebin/api-base-url --query 'Parameter.Value' --output text 2>/dev/null || echo "$API_BASE_URL")
-        export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text 2>/dev/null || echo "$DEFAULT_CF_DIST_ID")
+        # Strict resolution. A failed lookup must stop the build: silently
+        # falling back would ship a production binary pointed at dev.
+        export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text)
+        if [ -z "$API_URL" ] || [ "$API_URL" = "None" ]; then
+          echo "FATAL: SSM parameter ${SSM_PREFIX}/api-base-url is missing or empty"; exit 1
+        fi
+        case "$API_URL" in
+          https://*) ;;
+          *) echo "FATAL: ${SSM_PREFIX}/api-base-url must be an https URL, got: $API_URL"; exit 1 ;;
+        esac
+        export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text)
+        if [ -z "$CF_DIST_ID" ] || [ "$CF_DIST_ID" = "None" ]; then
+          echo "FATAL: SSM parameter ${SSM_PREFIX}/cloudfront-dist-id is missing or empty"; exit 1
+        fi
         echo "EXPO_PUBLIC_API_BASE_URL=$API_URL" > $ENV_FILE
         cat $ENV_FILE
         echo "export SSM_PREFIX=$SSM_PREFIX" > .env.deploy
@@ -54,7 +63,7 @@ phases:
       - source .env.deploy && aws s3 sync website/ s3://$TARGET_BUCKET/ --exclude "*.DS_Store" --cache-control "public, max-age=300"
       - source .env.deploy && aws s3 cp website/index.html s3://$TARGET_BUCKET/ --content-type "text/html" --cache-control "public, max-age=300"
       - source .env.deploy && echo "Invalidating CloudFront distribution ($CF_DIST_ID)..."
-      - source .env.deploy && if [ -n "$CF_DIST_ID" ] && [ "$CF_DIST_ID" != "None" ] && [ "$CF_DIST_ID" != "" ]; then aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"; fi
+      - source .env.deploy && aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"
       - echo "Build and website deployment complete."
 
 artifacts:

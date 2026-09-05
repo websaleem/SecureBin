@@ -56,3 +56,6 @@ expressions.txt
 # python
 __pycache__/
 *.py[cod]
+
+# staged lambda packages (scripts/package_lambdas.sh)
+backend/build/
