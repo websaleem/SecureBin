@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import time
 import uuid
 import boto3
@@ -38,6 +37,22 @@ except ImportError:  # pragma: no cover - packaging safety net
 ALLOWED_STATES = set(COUNCILS) or {
     "ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA",
 }
+
+
+def _json(status, obj):
+    """Shape a value as an API Gateway proxy response.
+
+    Restored after 17023ef removed it while adding the council allowlist: every
+    return path in this module calls it, including the error path, so the
+    function raised NameError on success AND again inside its own except block,
+    surfacing as a 502 on every request. The deployed Lambda still carried this
+    definition, which is why production kept working while the repo did not.
+    """
+    return {
+        "statusCode": status,
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(obj),
+    }
 
 
 def _validate_location(state, council):
@@ -107,7 +122,7 @@ def lambda_handler(event, context):
                 "DynamoDB put_item OK | jobId=%s | table=%s | ttl=%d | request_id=%s | mediaType=%s | council=%s | state=%s",
                 job_id, TABLE, ttl_value, request_id, media_type, council, state
             )
-        except Exception as e:
+        except Exception:
             logger.exception(
                 "DynamoDB put_item failed | jobId=%s | table=%s | request_id=%s",
                 job_id, TABLE, request_id,
@@ -131,7 +146,7 @@ def lambda_handler(event, context):
                 "Presigned POST generated | jobId=%s | bucket=%s | expires_in=%d | request_id=%s",
                 job_id, BUCKET, EXPIRES, request_id,
             )
-        except Exception as e:
+        except Exception:
             logger.exception(
                 "Presign failed | jobId=%s | bucket=%s | request_id=%s",
                 job_id, BUCKET, request_id,
@@ -147,6 +162,6 @@ def lambda_handler(event, context):
             "expiresIn": EXPIRES
         })
 
-    except Exception as e:
+    except Exception:
         logger.exception("presign failed with unexpected error | request_id=%s", request_id)
         return _json(500, {"error": "Internal error"})

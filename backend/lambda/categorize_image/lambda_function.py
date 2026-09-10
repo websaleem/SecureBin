@@ -194,27 +194,6 @@ def _claim_job(job_id, request_id):
         return False
 
 
-def _delete_upload(bucket, key, job_id, request_id):
-    """Delete the uploaded image from S3.
-
-    The privacy policy states images are deleted immediately after processing,
-    so this runs on every path — success and failure alike. The bucket lifecycle
-    rule remains only as a backstop for objects this never reaches.
-    """
-    try:
-        _s3.delete_object(Bucket=bucket, Key=key)
-        logger.info(
-            "S3 upload deleted | jobId=%s | bucket=%s | key=%s | request_id=%s",
-            job_id, bucket, key, request_id,
-        )
-    except Exception:
-        logger.exception(
-            "S3 delete failed — object will be removed by the lifecycle rule | "
-            "jobId=%s | bucket=%s | key=%s | request_id=%s",
-            job_id, bucket, key, request_id,
-        )
-
-
 def _update_job_status(job_id, status, request_id, **extra):
     """Update the DynamoDB row for a job."""
     expr = "SET #s = :s"
@@ -571,10 +550,12 @@ def lambda_handler(event, context):
                     job_id, request_id,
                 )
 
-        finally:
-            # The image has served its purpose either way — remove it now rather
-            # than leaving it for the next daily lifecycle sweep.
-            _delete_upload(bucket, key, job_id, request_id)
+        # The upload is intentionally NOT deleted here. Retention is owned by the
+        # bucket's lifecycle rule, which expires uploads/ after one day — a single
+        # mechanism that also covers images this function never reaches (upload
+        # succeeded but the trigger failed, or the function timed out). Deleting
+        # from application code as well meant two sources of truth for a privacy
+        # promise, and the one that could silently fail was the code path.
 
     logger.info("categorization completed | request_id=%s", request_id)
     return {"ok": True}

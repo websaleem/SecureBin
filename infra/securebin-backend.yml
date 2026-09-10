@@ -1,52 +1,71 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: SecureBin Backend Infrastructure — DynamoDB, S3, Lambdas, and HTTP API
+Description: >-
+  SecureBin production backend — DynamoDB, S3 uploads bucket, three Lambdas
+  behind CloudFront-signed Function URLs. Region: ap-southeast-2.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS TEMPLATE MIRRORS WHAT PRODUCTION ACTUALLY RUNS.
+#
+# It previously described an HTTP API (ApiGatewayV2) fronting differently-named
+# Lambdas and a `securebin-uploads-<account>-<env>` bucket. Production runs none
+# of that. The live stack — verified against the account — is:
+#
+#   * Lambda Function URLs with AuthType AWS_IAM, not API Gateway. CloudFront
+#     reaches them through Origin Access Control, which SigV4-signs each
+#     request, so the URLs cannot be called directly from the internet.
+#   * Functions named sbGetPresignURL / sbCategorizeImage / sbGetJobResult on
+#     python3.14, using three pre-existing hand-made IAM roles.
+#   * Uploads bucket `securebin-image-s3-uploads`, table
+#     `securebin-categorize-jobs`.
+#
+# Deploying the old template would NOT have updated production; it would have
+# built a parallel stack alongside it. Keeping this file honest matters more
+# than keeping it aspirational — an infrastructure template that describes
+# something other than reality is worse than no template, because it invites
+# exactly that mistake.
+#
+# IMAGE RETENTION. Uploaded images are expired solely by the bucket lifecycle
+# rule below (one day). The categorize Lambda deliberately does NOT delete them:
+# one mechanism, applied by S3 itself, covers every object — including uploads
+# whose trigger never fired or whose function timed out, which application-side
+# deletion could never reach. The privacy policy is written to match this rule,
+# so the two must be changed together.
+# ─────────────────────────────────────────────────────────────────────────────
 
 Parameters:
-  BedrockModelId:
-    Type: String
-    Default: 'amazon.nova-lite-v1:0'
-    Description: The Bedrock model ID for image categorization
-  ProdCloudFrontUrl:
-    Type: String
-    Default: 'https://securebin.websaleem.com'
-    Description: Production CloudFront Origin URL
-  DevCloudFrontUrl:
-    Type: String
-    Default: 'https://dev.securebin.websaleem.com'
-    Description: Development CloudFront Origin URL
-  CategorizeMaxConcurrency:
-    Type: Number
-    Default: 10
-    MinValue: 1
-    MaxValue: 100
-    Description: >-
-      Reserved concurrency for the Bedrock-invoking Processor Lambda. This is
-      the hard ceiling on parallel model calls, and therefore on spend rate.
   UploadsBucketName:
     Type: String
-    Default: 'securebin-image-s3-uploads'
-    Description: >-
-      Name of the uploads bucket. IAM policies and the S3 invoke permission
-      build this ARN from the name rather than !GetAtt, because the bucket's
-      notification config already points at the Processor Lambda and a GetAtt
-      would close a circular dependency (bucket -> lambda -> role -> bucket).
-  AllowLocalhostOrigin:
-    Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: >-
-      Whether http://localhost:8081 is an accepted CORS origin. Must stay
-      'false' in production; set 'true' only on a development stack.
+    Default: securebin-image-s3-uploads
 
-Conditions:
-  IncludeLocalhostOrigin: !Equals [!Ref AllowLocalhostOrigin, 'true']
+  JobsTableName:
+    Type: String
+    Default: securebin-categorize-jobs
+
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-lite-v1:0
+
+  UploadRetentionDays:
+    Type: Number
+    Default: 1
+    Description: >-
+      Days before an uploaded image is expired by S3. This is the ONLY retention
+      mechanism, and website/privacy.html states 24 hours — change both together.
+
+  DistributionId:
+    Type: String
+    Default: E90FW67SOXKZN
+    Description: >-
+      CloudFront distribution permitted to invoke the Function URLs. The
+      distribution itself is not managed here (it also fronts the marketing site
+      and predates this template); only the invoke permissions that reference it.
 
 Resources:
-  # ───────── DynamoDB Table ─────────
+  # ───────── DynamoDB ─────────
   JobsTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: securebin-categorize-jobs
+      TableName: !Ref JobsTableName
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: jobId
@@ -54,378 +73,262 @@ Resources:
       KeySchema:
         - AttributeName: jobId
           KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
-      SSESpecification:
-        SSEEnabled: true
+      # NOTE: the presign Lambda writes a `ttl` attribute on every row, but TTL
+      # is DISABLED on the live table, so nothing expires and job rows (jobId,
+      # council, state, result) accumulate indefinitely. Enabling this is a
+      # behaviour change to production, so it is left off here to match reality.
+      # Turn it on deliberately:
+      # TimeToLiveSpecification:
+      #   AttributeName: ttl
+      #   Enabled: true
 
-  # ───────── S3 Bucket ─────────
+  # ───────── Uploads bucket ─────────
   UploadsBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Ref UploadsBucketName
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
-        BlockPublicPolicy: true
         IgnorePublicAcls: true
+        BlockPublicPolicy: true
         RestrictPublicBuckets: true
-      CorsConfiguration:
-        CorsRules:
-          - AllowedHeaders:
-              - '*'
-            AllowedMethods:
-              - PUT
-              - POST
-            AllowedOrigins: !If
-              - IncludeLocalhostOrigin
-              - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl, 'http://localhost:8081']
-              - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl]
-            MaxAge: 3600
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
       LifecycleConfiguration:
         Rules:
-          # Backstop only — the Processor Lambda deletes each object as soon as
-          # it has been classified, per the published privacy policy.
-          - Id: DeleteAfter1Day
+          # The single retention mechanism for user images. See the header.
+          - Id: securebin-expire-uploads
             Status: Enabled
-            ExpirationInDays: 1
-          - Id: AbortIncompleteUploads
+            Prefix: uploads/
+            ExpirationInDays: !Ref UploadRetentionDays
+          # Multipart uploads that never complete are invisible to the rule
+          # above and would otherwise be billed indefinitely.
+          - Id: securebin-abort-incomplete-multipart
             Status: Enabled
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
       NotificationConfiguration:
         LambdaConfigurations:
-          - Event: s3:ObjectCreated:*
+          - Event: s3:ObjectCreated:Put
             Function: !GetAtt CategorizeImageLambda.Arn
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: uploads/
-
-  UploadsBucketPolicy:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref UploadsBucket
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: DenyInsecureTransport
-            Effect: Deny
-            Principal: '*'
-            Action: 's3:*'
-            Resource:
-              - !Sub "arn:aws:s3:::${UploadsBucketName}"
-              - !Sub "arn:aws:s3:::${UploadsBucketName}/*"
-            Condition:
-              Bool:
-                'aws:SecureTransport': false
+          - Event: s3:ObjectCreated:Post
+            Function: !GetAtt CategorizeImageLambda.Arn
 
   UploadsBucketInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
-      FunctionName: !Ref CategorizeImageLambda
+      FunctionName: !GetAtt CategorizeImageLambda.Arn
       Principal: s3.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:aws:s3:::${UploadsBucketName}"
 
-  # ───────── IAM Roles ─────────
+  # ───────── IAM ─────────
+  # Scoped to uploads/* rather than the whole bucket: the presign Lambda mints
+  # keys only under that prefix, so nothing needs access outside it.
   GetPresignUrlRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: securebin-s3-presign-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
+            Principal: { Service: lambda.amazonaws.com }
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: GetPresignUrlPolicy
+        - PolicyName: securebin-s3-presign-policy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: arn:aws:logs:*:*:*
+                Action: s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/uploads/*"
               - Effect: Allow
-                Action:
-                  - dynamodb:PutItem
-                Resource: !GetAtt JobsTable.Arn
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/*"
+                Action: dynamodb:PutItem
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${JobsTableName}"
 
   CategorizeImageRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: securebin-categorize-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
+            Principal: { Service: lambda.amazonaws.com }
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: CategorizeImagePolicy
+        - PolicyName: securebin-categorize-policy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # s3:DeleteObject is deliberately absent. The live role still
+              # carries it from when the function deleted images itself; now
+              # that retention is the lifecycle rule's job, the function has no
+              # reason to be able to delete anything.
               - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: arn:aws:logs:*:*:*
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/uploads/*"
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
-                Resource: !GetAtt JobsTable.Arn
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:DeleteObject
-                Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/*"
-              - Effect: Allow
-                Action:
-                  - sqs:SendMessage
-                Resource: !GetAtt CategorizeImageDLQ.Arn
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${JobsTableName}"
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
 
   GetJobResultRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: securebin-categorize-result-role
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
+            Principal: { Service: lambda.amazonaws.com }
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: GetJobResultPolicy
+        - PolicyName: securebin-categorize-result-policy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: arn:aws:logs:*:*:*
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                Resource: !GetAtt JobsTable.Arn
+                Action: dynamodb:GetItem
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${JobsTableName}"
 
-  # ───────── Lambda Functions ─────────
+  # ───────── Lambdas ─────────
+  # Code is deployed by buildspec-deploy.yml, not inlined here.
   GetPresignUrlLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: sbGetPresignURL
+      Runtime: python3.14
       Handler: lambda_function.lambda_handler
-      Runtime: python3.12
       Role: !GetAtt GetPresignUrlRole.Arn
       Timeout: 10
       MemorySize: 256
-      # Staged by scripts/package_lambdas.sh — includes shared/councils.py
-      Code: ../build/get_presign_url/
       Environment:
         Variables:
-          TABLE_NAME: !Ref JobsTable
           BUCKET_NAME: !Ref UploadsBucketName
-
-  CategorizeImageDLQ:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: securebin-categorize-dlq
-      MessageRetentionPeriod: 1209600
-      SqsManagedSseEnabled: true
+          TABLE_NAME: !Ref JobsTableName
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 503}
 
   CategorizeImageLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: sbCategorizeImage
+      Runtime: python3.14
       Handler: lambda_function.lambda_handler
-      Runtime: python3.12
       Role: !GetAtt CategorizeImageRole.Arn
       Timeout: 30
       MemorySize: 512
-      # This is the only function that spends money per invocation. Cap it so a
-      # burst of uploads cannot run up an unbounded Bedrock bill.
-      ReservedConcurrentExecutions: !Ref CategorizeMaxConcurrency
-      DeadLetterConfig:
-        TargetArn: !GetAtt CategorizeImageDLQ.Arn
-      # Staged by scripts/package_lambdas.sh — includes shared/councils.py
-      Code: ../build/categorize_image/
       Environment:
         Variables:
-          TABLE_NAME: !Ref JobsTable
+          TABLE_NAME: !Ref JobsTableName
           MODEL_ID: !Ref BedrockModelId
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"ok": False}
 
   GetJobResultLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: sbGetJobResult
+      Runtime: python3.14
       Handler: lambda_function.lambda_handler
-      Runtime: python3.12
       Role: !GetAtt GetJobResultRole.Arn
       Timeout: 10
       MemorySize: 256
-      Code: ../build/get_job_result/
       Environment:
         Variables:
-          TABLE_NAME: !Ref JobsTable
+          TABLE_NAME: !Ref JobsTableName
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"statusCode": 503}
 
-  # ───────── HTTP API Gateway ─────────
-  HttpApi:
-    Type: AWS::ApiGatewayV2::Api
+  # ───────── Function URLs ─────────
+  # AWS_IAM, never NONE. These URLs are public DNS names; IAM auth is the only
+  # thing preventing direct invocation that bypasses CloudFront entirely.
+  GetPresignUrlFunctionUrl:
+    Type: AWS::Lambda::Url
     Properties:
-      Name: SecureBinHttpApi
-      ProtocolType: HTTP
-      CorsConfiguration:
-        AllowOrigins: !If
-          - IncludeLocalhostOrigin
-          - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl, 'http://localhost:8081']
-          - ['https://securebin.websaleem.com', 'https://dev.securebin.websaleem.com', !Ref ProdCloudFrontUrl, !Ref DevCloudFrontUrl]
-        AllowMethods:
-          - GET
-          - OPTIONS
-        AllowHeaders:
-          - '*'
+      TargetFunctionArn: !GetAtt GetPresignUrlLambda.Arn
+      AuthType: AWS_IAM
 
-  # Integrations
-  GetPresignUrlIntegration:
-    Type: AWS::ApiGatewayV2::Integration
+  GetJobResultFunctionUrl:
+    Type: AWS::Lambda::Url
     Properties:
-      ApiId: !Ref HttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !GetAtt GetPresignUrlLambda.Arn
-      PayloadFormatVersion: '2.0'
+      TargetFunctionArn: !GetAtt GetJobResultLambda.Arn
+      AuthType: AWS_IAM
 
-  GetJobResultIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref HttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationUri: !GetAtt GetJobResultLambda.Arn
-      PayloadFormatVersion: '2.0'
-
-  # Routes
-  GetPresignUrlRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: 'GET /presign'
-      Target: !Sub "integrations/${GetPresignUrlIntegration}"
-
-  GetJobResultRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: 'GET /result/{jobId}'
-      Target: !Sub "integrations/${GetJobResultIntegration}"
-
-  # Stage
-  HttpApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    Properties:
-      ApiId: !Ref HttpApi
-      StageName: prod
-      AutoDeploy: true
-      DefaultRouteSettings:
-        ThrottlingBurstLimit: 20
-        ThrottlingRateLimit: 10
-      RouteSettings:
-        # /presign is the entry point to the billable pipeline, so it is held
-        # well below the stage default. /result is cheap and polled 30x per scan.
-        'GET /presign':
-          ThrottlingBurstLimit: 10
-          ThrottlingRateLimit: 5
-        'GET /result/{jobId}':
-          ThrottlingBurstLimit: 40
-          ThrottlingRateLimit: 20
-
-  # Permissions for API Gateway to invoke Lambdas
-  GetPresignUrlApiPermission:
+  # Only this distribution may invoke them, and only via the Function URL.
+  GetPresignUrlCloudFrontPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref GetPresignUrlLambda
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/presign"
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !GetAtt GetPresignUrlLambda.Arn
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
 
-  GetJobResultApiPermission:
+  GetJobResultCloudFrontPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref GetJobResultLambda
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/result/*"
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !GetAtt GetJobResultLambda.Arn
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
 
-  # ───────── CloudFront Security Headers ─────────
-  # Attach this policy to the website distribution's default cache behaviour.
-  # The distribution itself is managed outside this template.
-  SecurityHeadersPolicy:
-    Type: AWS::CloudFront::ResponseHeadersPolicy
+  # ───────── CloudFront Origin Access Control ─────────
+  # SigV4-signs every origin request so the IAM-authed Function URLs accept it.
+  PresignOAC:
+    Type: AWS::CloudFront::OriginAccessControl
     Properties:
-      ResponseHeadersPolicyConfig:
-        Name: SecureBinSecurityHeaders
-        Comment: Baseline security headers for the SecureBin marketing site
-        SecurityHeadersConfig:
-          StrictTransportSecurity:
-            AccessControlMaxAgeSec: 63072000
-            IncludeSubdomains: true
-            Preload: true
-            Override: true
-          ContentTypeOptions:
-            Override: true
-          FrameOptions:
-            FrameOption: DENY
-            Override: true
-          ReferrerPolicy:
-            ReferrerPolicy: strict-origin-when-cross-origin
-            Override: true
-          ContentSecurityPolicy:
-            Override: true
-            ContentSecurityPolicy: >-
-              default-src 'self';
-              script-src 'self' 'unsafe-inline';
-              style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
-              font-src 'self' https://cdnjs.cloudflare.com;
-              img-src 'self' data:;
-              connect-src 'self' https://formspree.io;
-              frame-ancestors 'none';
-              base-uri 'self';
-              form-action https://formspree.io
-        CustomHeadersConfig:
-          Items:
-            - Header: Permissions-Policy
-              Value: 'camera=(), microphone=(), geolocation=(), interest-cohort=()'
-              Override: true
+      OriginAccessControlConfig:
+        Name: securebin-presign-oac
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  JobResultOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: securebin-categorize-job-oac
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
 
 Outputs:
-  ApiEndpoint:
-    Description: Base URL for the SecureBin API
-    Value: !GetAtt HttpApi.ApiEndpoint
-  SecurityHeadersPolicyId:
-    Description: Attach to the website CloudFront distribution's cache behaviour
-    Value: !Ref SecurityHeadersPolicy
-  CategorizeDLQUrl:
-    Description: Dead-letter queue for Processor Lambda invocations that never succeeded
-    Value: !Ref CategorizeImageDLQ
+  UploadsBucket:
+    Value: !Ref UploadsBucket
+  JobsTable:
+    Value: !Ref JobsTable
+  PresignFunctionUrl:
+    Description: Wire as the CloudFront /presign origin, with PresignOAC attached
+    Value: !GetAtt GetPresignUrlFunctionUrl.FunctionUrl
+  JobResultFunctionUrl:
+    Description: Wire as the CloudFront /result/* origin, with JobResultOAC attached
+    Value: !GetAtt GetJobResultFunctionUrl.FunctionUrl
+  PresignOACId:
+    Value: !Ref PresignOAC
+  JobResultOACId:
+    Value: !Ref JobResultOAC
