@@ -189,6 +189,8 @@ Resources:
                 Owner: AWS
                 Provider: CodeStarSourceConnection
                 Version: '1'
+              # Exposes #{SourceVariables.BranchName} to later actions.
+              Namespace: SourceVariables
               OutputArtifacts:
                 - Name: SourceArtifact
               Configuration:
@@ -209,6 +211,10 @@ Resources:
                 - Name: BuildArtifact
               Configuration:
                 ProjectName: !Ref SecureBinBuildProject
+                # Under CodePipeline, CODEBUILD_SOURCE_VERSION is an S3 artifact ARN,
+                # never a branch name, so buildspec.yml cannot detect main on its own.
+                # Without this, every build configured itself for development.
+                EnvironmentVariables: '[{"name":"BRANCH_NAME","value":"#{SourceVariables.BranchName}","type":"PLAINTEXT"}]'
         - Name: Approval
           Actions:
             - Name: ManualApproval

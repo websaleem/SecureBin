@@ -1,6 +1,9 @@
 version: 0.2
 
 env:
+  # Run commands in bash explicitly: post_build relies on `source`, which POSIX
+  # sh does not provide.
+  shell: bash
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
@@ -14,19 +17,29 @@ phases:
       java: corretto17
     commands:
       - echo "Installing dependencies..."
-      - echo "Detecting branch and configuring deployment environment..."
+      - echo "Resolving deployment environment from the pipeline branch..."
       - |
-        if [ "$CODEBUILD_SOURCE_VERSION" = "main" ] || [ "$CODEBUILD_SOURCE_VERSION" = "refs/heads/main" ]; then
-          echo "=== Configuring for PRODUCTION (main branch) ==="
-          export SSM_PREFIX=/securebin/prod
-          export TARGET_BUCKET=securebin.websaleem.com
-          export ENV_FILE=.env.production
-        else
-          echo "=== Configuring for DEVELOPMENT (dev branch) ==="
-          export SSM_PREFIX=/securebin/dev
-          export TARGET_BUCKET=dev.securebin.websaleem.com
-          export ENV_FILE=.env.development
-        fi
+        # BRANCH_NAME is passed by the pipeline (infra/ci-cd.yaml). Under
+        # CodePipeline, CODEBUILD_SOURCE_VERSION is an S3 artifact ARN, so it can
+        # never identify the branch; checking it sent every build to development.
+        # An unknown branch stops the build rather than guessing an environment.
+        case "${BRANCH_NAME:-}" in
+          main|refs/heads/main)
+            echo "=== Configuring for PRODUCTION (branch: $BRANCH_NAME) ==="
+            export SSM_PREFIX=/securebin/prod
+            export TARGET_BUCKET=securebin.websaleem.com
+            export ENV_FILE=.env.production
+            ;;
+          "")
+            echo "FATAL: BRANCH_NAME is not set; refusing to guess the deployment environment"; exit 1
+            ;;
+          *)
+            echo "=== Configuring for DEVELOPMENT (branch: $BRANCH_NAME) ==="
+            export SSM_PREFIX=/securebin/dev
+            export TARGET_BUCKET=dev.securebin.websaleem.com
+            export ENV_FILE=.env.development
+            ;;
+        esac
         # Strict resolution. A failed lookup must stop the build: silently
         # falling back would ship a production binary pointed at dev.
         export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text)
@@ -46,6 +59,24 @@ phases:
         echo "export SSM_PREFIX=$SSM_PREFIX" > .env.deploy
         echo "export TARGET_BUCKET=$TARGET_BUCKET" >> .env.deploy
         echo "export CF_DIST_ID=$CF_DIST_ID" >> .env.deploy
+      - |
+        # The standard:7.0 image ships no Android SDK, so every release build
+        # before this failed in Gradle with "SDK location not found". Install the
+        # components this project's Gradle configuration requests.
+        export ANDROID_HOME="$HOME/android-sdk"
+        export ANDROID_SDK_ROOT="$ANDROID_HOME"
+        mkdir -p "$ANDROID_HOME/cmdline-tools"
+        curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+          && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+          && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+          || { echo "FATAL: could not install Android cmdline-tools"; exit 1; }
+        yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+          "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.30.5" \
+          > /tmp/sdkmanager.log 2>&1 \
+          || { tail -50 /tmp/sdkmanager.log; echo "FATAL: sdkmanager install failed"; exit 1; }
+        echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+        echo "Android SDK ready at $ANDROID_HOME"
       - npm ci --legacy-peer-deps
   pre_build:
     commands:
@@ -59,12 +90,20 @@ phases:
       - cd ..
   post_build:
     commands:
-      - source .env.deploy && echo "Deploying website to S3 ($TARGET_BUCKET)..."
-      - source .env.deploy && aws s3 sync website/ s3://$TARGET_BUCKET/ --exclude "*.DS_Store" --cache-control "public, max-age=300"
-      - source .env.deploy && aws s3 cp website/index.html s3://$TARGET_BUCKET/ --content-type "text/html" --cache-control "public, max-age=300"
-      - source .env.deploy && echo "Invalidating CloudFront distribution ($CF_DIST_ID)..."
-      - source .env.deploy && aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"
-      - echo "Build and website deployment complete."
+      - |
+        # post_build runs even when the build phase failed. Deploying the site
+        # from a failed build would publish a release whose app never built.
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then
+          echo "Build did not succeed; skipping website deployment."
+        else
+          source .env.deploy \
+            && echo "Deploying website to S3 ($TARGET_BUCKET)..." \
+            && aws s3 sync website/ "s3://$TARGET_BUCKET/" --exclude "*.DS_Store" --cache-control "public, max-age=300" \
+            && aws s3 cp website/index.html "s3://$TARGET_BUCKET/" --content-type "text/html" --cache-control "public, max-age=300" \
+            && echo "Invalidating CloudFront distribution ($CF_DIST_ID)..." \
+            && aws cloudfront create-invalidation --distribution-id "$CF_DIST_ID" --paths "/*" "/" \
+            && echo "Build and website deployment complete."
+        fi
 
 artifacts:
   files:
