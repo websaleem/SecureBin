@@ -73,14 +73,14 @@ Resources:
       KeySchema:
         - AttributeName: jobId
           KeyType: HASH
-      # NOTE: the presign Lambda writes a `ttl` attribute on every row, but TTL
-      # is DISABLED on the live table, so nothing expires and job rows (jobId,
-      # council, state, result) accumulate indefinitely. Enabling this is a
-      # behaviour change to production, so it is left off here to match reality.
-      # Turn it on deliberately:
-      # TimeToLiveSpecification:
-      #   AttributeName: ttl
-      #   Enabled: true
+      # The presign Lambda stamps every row with `ttl` (createdAt + 24h). Without
+      # this block that attribute was inert and job rows — jobId, council, state,
+      # and the classification result — accumulated indefinitely. Enabled here
+      # and on the live table so the data expires on the schedule the code
+      # already intended.
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
 
   # ───────── Uploads bucket ─────────
   UploadsBucket:
