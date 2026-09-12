@@ -8,8 +8,8 @@
 # at runtime, COUNCILS is empty, and every location silently degrades to
 # "unknown" instead of giving council-specific advice.
 #
-# Run this before `aws cloudformation deploy`; the template's Code paths point at
-# the staged directories this produces.
+# scripts/deploy-backend.sh calls this, then zips and uploads the staged
+# directories it produces. Run it directly only to inspect what would ship.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,4 +45,4 @@ for fn in "${NEEDS_SHARED[@]}"; do
       print('  verified: %d states, %d councils' % (len(councils.COUNCILS), sum(len(v) for v in councils.COUNCILS.values())))" )
 done
 
-echo "OK — deploy with: aws cloudformation deploy --template-file infra/securebin-backend.yml ..."
+echo "OK — staged only. Deploy with: ./scripts/deploy-backend.sh {prod|dev}"

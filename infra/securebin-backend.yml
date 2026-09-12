@@ -1,38 +1,55 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  SecureBin production backend — DynamoDB, S3 uploads bucket, three Lambdas
-  behind CloudFront-signed Function URLs. Region: ap-southeast-2.
+  SecureBin backend — DynamoDB, S3 uploads bucket, three Lambdas behind
+  CloudFront-signed Function URLs. One template, both environments.
+  Region: ap-southeast-2.
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THIS TEMPLATE MIRRORS WHAT PRODUCTION ACTUALLY RUNS.
+# THIS TEMPLATE OWNS PRODUCTION.
 #
-# It previously described an HTTP API (ApiGatewayV2) fronting differently-named
-# Lambdas and a `securebin-uploads-<account>-<env>` bucket. Production runs none
-# of that. The live stack — verified against the account — is:
+# It did not always. Production was built by hand and lived outside
+# CloudFormation entirely, while two stacks named securebin-prod-backend and
+# securebin-dev-backend held a parallel, unused copy of the same shapes. The
+# real functions were therefore only deployable by `aws lambda
+# update-function-code`, and this file — however accurate — described nothing
+# the account actually ran. The live resources were imported into
+# securebin-backend-prod (see scripts/import-prod-backend.sh) so that the
+# description and the reality are the same objects.
 #
-#   * Lambda Function URLs with AuthType AWS_IAM, not API Gateway. CloudFront
-#     reaches them through Origin Access Control, which SigV4-signs each
-#     request, so the URLs cannot be called directly from the internet.
-#   * Functions named sbGetPresignURL / sbCategorizeImage / sbGetJobResult on
-#     python3.14, using three pre-existing hand-made IAM roles.
-#   * Uploads bucket `securebin-image-s3-uploads`, table
-#     `securebin-categorize-jobs`.
+# CODE IS DEPLOYED THROUGH THIS TEMPLATE, from S3. Earlier revisions carried an
+# inline `ZipFile` stub returning 503 and a comment claiming the CI buildspec
+# deployed the real code. No buildspec ever did. Had anyone run
+# `cloudformation deploy` against that version, CloudFormation would have
+# faithfully replaced the production handlers with the stub. Code now arrives as
+# a content-addressed S3 object (scripts/deploy-backend.sh), so the template can
+# never be a downgrade: the artifact key IS the version.
 #
-# Deploying the old template would NOT have updated production; it would have
-# built a parallel stack alongside it. Keeping this file honest matters more
-# than keeping it aspirational — an infrastructure template that describes
-# something other than reality is worse than no template, because it invites
-# exactly that mistake.
+# WHAT THIS TEMPLATE DOES NOT OWN. The CloudFront distributions. Prod's also
+# fronts the marketing site and predates all of this; dev's is API-only. Both
+# are referenced by id as a parameter, and only the invoke permissions that
+# name them are managed here. Adopting a distribution means describing every
+# behaviour and origin exactly, and a single omission is silently destructive on
+# the next update — not a trade worth making for two distributions that change
+# once a year.
 #
 # IMAGE RETENTION. Uploaded images are expired solely by the bucket lifecycle
 # rule below (one day). The categorize Lambda deliberately does NOT delete them:
 # one mechanism, applied by S3 itself, covers every object — including uploads
 # whose trigger never fired or whose function timed out, which application-side
-# deletion could never reach. The privacy policy is written to match this rule,
-# so the two must be changed together.
+# deletion could never reach. website/privacy.html is written to match this
+# rule, so the two must be changed together.
 # ─────────────────────────────────────────────────────────────────────────────
 
 Parameters:
+  ResourceSuffix:
+    Type: String
+    Default: ''
+    AllowedValues: ['', '-dev']
+    Description: >-
+      Appended to every physically-named resource. Empty for production, whose
+      names predate this template and cannot change without replacing the
+      functions the live distribution points at; "-dev" for the dev stack.
+
   UploadsBucketName:
     Type: String
     Default: securebin-image-s3-uploads
@@ -54,16 +71,34 @@ Parameters:
 
   DistributionId:
     Type: String
-    Default: E90FW67SOXKZN
     Description: >-
       CloudFront distribution permitted to invoke the Function URLs. The
-      distribution itself is not managed here (it also fronts the marketing site
-      and predates this template); only the invoke permissions that reference it.
+      distribution itself is not managed here; only the invoke permissions.
+
+  ArtifactsBucket:
+    Type: String
+    Description: S3 bucket holding the packaged Lambda zips.
+
+  PresignCodeKey:
+    Type: String
+    Description: S3 key of the get_presign_url package (content-addressed).
+
+  CategorizeCodeKey:
+    Type: String
+    Description: S3 key of the categorize_image package (content-addressed).
+
+  JobResultCodeKey:
+    Type: String
+    Description: S3 key of the get_job_result package (content-addressed).
 
 Resources:
   # ───────── DynamoDB ─────────
   JobsTable:
     Type: AWS::DynamoDB::Table
+    # Holds in-flight jobs. Retained so a stack mistake cannot take the table
+    # with it; the rows expire on their own via TTL.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Ref JobsTableName
       BillingMode: PAY_PER_REQUEST
@@ -74,17 +109,21 @@ Resources:
         - AttributeName: jobId
           KeyType: HASH
       # The presign Lambda stamps every row with `ttl` (createdAt + 24h). Without
-      # this block that attribute was inert and job rows — jobId, council, state,
-      # and the classification result — accumulated indefinitely. Enabled here
-      # and on the live table so the data expires on the schedule the code
-      # already intended.
+      # this block that attribute is inert and job rows — jobId, council, state,
+      # and the classification result — accumulate indefinitely.
       TimeToLiveSpecification:
         AttributeName: ttl
         Enabled: true
 
   # ───────── Uploads bucket ─────────
+  # Every property S3 reports on the live bucket is restated here. An omitted
+  # property is not "left alone" by an update — it is reset to the default, so
+  # leaving out the CORS rules or the ownership controls would break uploads or
+  # re-enable ACLs the first time this stack is deployed.
   UploadsBucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Ref UploadsBucketName
       PublicAccessBlockConfiguration:
@@ -92,10 +131,25 @@ Resources:
         IgnorePublicAcls: true
         BlockPublicPolicy: true
         RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+            # Customer-provided keys would let an uploader supply their own key
+            # and make the object unreadable to the categorizer.
+            BlockedEncryptionTypes:
+              EncryptionType:
+                - SSE-C
+      CorsConfiguration:
+        # The app POSTs the image straight to S3 with the presigned form fields.
+        CorsRules:
+          - AllowedHeaders: ['Content-Type', '*']
+            AllowedMethods: [PUT, POST, GET]
+            AllowedOrigins: ['*']
       LifecycleConfiguration:
         Rules:
           # The single retention mechanism for user images. See the header.
@@ -107,20 +161,35 @@ Resources:
           # above and would otherwise be billed indefinitely.
           - Id: securebin-abort-incomplete-multipart
             Status: Enabled
+            Prefix: ''
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
       NotificationConfiguration:
         LambdaConfigurations:
+          # Prefix-filtered: without it, any future object written anywhere in
+          # the bucket would invoke Bedrock.
           - Event: s3:ObjectCreated:Put
-            Function: !GetAtt CategorizeImageLambda.Arn
+            Function: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbCategorizeImage${ResourceSuffix}"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
           - Event: s3:ObjectCreated:Post
-            Function: !GetAtt CategorizeImageLambda.Arn
+            Function: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbCategorizeImage${ResourceSuffix}"
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+    DependsOn: UploadsBucketInvokePermission
 
   UploadsBucketInvokePermission:
     Type: AWS::Lambda::Permission
+    DependsOn: CategorizeImageLambda
     Properties:
       Action: lambda:InvokeFunction
-      FunctionName: !GetAtt CategorizeImageLambda.Arn
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbCategorizeImage${ResourceSuffix}"
       Principal: s3.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:aws:s3:::${UploadsBucketName}"
@@ -131,7 +200,8 @@ Resources:
   GetPresignUrlRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: securebin-s3-presign-role
+      RoleName: !Sub "securebin-s3-presign-role${ResourceSuffix}"
+      Description: Allows Lambda functions to call AWS services on your behalf.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -155,7 +225,8 @@ Resources:
   CategorizeImageRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: securebin-categorize-role
+      RoleName: !Sub "securebin-categorize-role${ResourceSuffix}"
+      Description: Allows Lambda functions to call AWS services on your behalf.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -169,10 +240,9 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # s3:DeleteObject is deliberately absent. The live role still
-              # carries it from when the function deleted images itself; now
-              # that retention is the lifecycle rule's job, the function has no
-              # reason to be able to delete anything.
+              # s3:DeleteObject is deliberately absent. The role carried it from
+              # when the function deleted images itself; now that retention is
+              # the lifecycle rule's job, nothing here should be able to delete.
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub "arn:aws:s3:::${UploadsBucketName}/uploads/*"
@@ -190,7 +260,8 @@ Resources:
   GetJobResultRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: securebin-categorize-result-role
+      RoleName: !Sub "securebin-categorize-result-role${ResourceSuffix}"
+      Description: Allows Lambda functions to call AWS services on your behalf.
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -209,92 +280,143 @@ Resources:
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${JobsTableName}"
 
   # ───────── Lambdas ─────────
-  # Code is deployed by buildspec-deploy.yml, not inlined here.
+  # Code comes from S3, keyed by the sha256 of the package. Deploying the same
+  # source twice is a no-op; deploying new source changes the key and therefore
+  # the function. See scripts/deploy-backend.sh.
   GetPresignUrlLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: sbGetPresignURL
+      FunctionName: !Sub "sbGetPresignURL${ResourceSuffix}"
       Runtime: python3.14
       Handler: lambda_function.lambda_handler
       Role: !GetAtt GetPresignUrlRole.Arn
       Timeout: 10
       MemorySize: 256
+      Architectures: [x86_64]
       Environment:
         Variables:
           BUCKET_NAME: !Ref UploadsBucketName
           TABLE_NAME: !Ref JobsTableName
       Code:
-        ZipFile: |
-          def lambda_handler(event, context):
-              return {"statusCode": 503}
+        S3Bucket: !Ref ArtifactsBucket
+        S3Key: !Ref PresignCodeKey
 
   CategorizeImageLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: sbCategorizeImage
+      FunctionName: !Sub "sbCategorizeImage${ResourceSuffix}"
       Runtime: python3.14
       Handler: lambda_function.lambda_handler
       Role: !GetAtt CategorizeImageRole.Arn
       Timeout: 30
       MemorySize: 512
+      Architectures: [x86_64]
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTableName
           MODEL_ID: !Ref BedrockModelId
       Code:
-        ZipFile: |
-          def lambda_handler(event, context):
-              return {"ok": False}
+        S3Bucket: !Ref ArtifactsBucket
+        S3Key: !Ref CategorizeCodeKey
 
   GetJobResultLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: sbGetJobResult
+      FunctionName: !Sub "sbGetJobResult${ResourceSuffix}"
       Runtime: python3.14
       Handler: lambda_function.lambda_handler
       Role: !GetAtt GetJobResultRole.Arn
       Timeout: 10
       MemorySize: 256
+      Architectures: [x86_64]
       Environment:
         Variables:
           TABLE_NAME: !Ref JobsTableName
       Code:
-        ZipFile: |
-          def lambda_handler(event, context):
-              return {"statusCode": 503}
+        S3Bucket: !Ref ArtifactsBucket
+        S3Key: !Ref JobResultCodeKey
 
   # ───────── Function URLs ─────────
   # AWS_IAM, never NONE. These URLs are public DNS names; IAM auth is the only
   # thing preventing direct invocation that bypasses CloudFront entirely.
+  # CategorizeImageLambda has no URL: it is invoked by S3, and the one it used
+  # to carry was an unreferenced public hostname.
+  # TargetFunctionArn is built from parameters with !Sub rather than read with
+  # !GetAtt. Both resolve to the same ARN, but !GetAtt is a resource attribute
+  # that CloudFormation cannot evaluate while planning, so it reports
+  # TargetFunctionArn as a possible change with RequiresRecreation: Always on
+  # every single deploy. Recreating one of these URLs mints a new hostname while
+  # the distribution still points at the old one — a silent outage of /presign.
+  # A literal !Sub is plan-time comparable, so an unchanged URL shows up as
+  # unchanged. DependsOn replaces the ordering that !GetAtt implied.
   GetPresignUrlFunctionUrl:
     Type: AWS::Lambda::Url
+    DependsOn: GetPresignUrlLambda
     Properties:
-      TargetFunctionArn: !GetAtt GetPresignUrlLambda.Arn
+      TargetFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetPresignURL${ResourceSuffix}"
       AuthType: AWS_IAM
 
   GetJobResultFunctionUrl:
     Type: AWS::Lambda::Url
+    DependsOn: GetJobResultLambda
     Properties:
-      TargetFunctionArn: !GetAtt GetJobResultLambda.Arn
+      TargetFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetJobResult${ResourceSuffix}"
       AuthType: AWS_IAM
 
   # Only this distribution may invoke them, and only via the Function URL.
+  #
+  # TWO statements per function, and both are required. An OAC-signed request is
+  # authorized twice: the Function URL front door checks
+  # lambda:InvokeFunctionUrl, and invoking the function behind it checks
+  # lambda:InvokeFunction. With only the first, every request returns
+  # 403 AccessDeniedException before the handler runs — and it looks exactly
+  # like a signing failure, because the denial arrives from Lambda's front door
+  # with no log stream to inspect. Production's hand-made policy carried both
+  # (the console adds the pair), which is why a template with just
+  # InvokeFunctionUrl described prod correctly enough to deploy and still broke
+  # a freshly built environment. Verified by bisection against a throwaway
+  # distribution: InvokeFunctionUrl alone 403s, adding InvokeFunction gives 200.
+  #
+  # FunctionUrlAuthType is deliberately set only on the InvokeFunctionUrl
+  # statements. On an InvokeFunction statement it adds a
+  # lambda:FunctionUrlAuthType condition to a call that is not the URL
+  # front-door check.
   GetPresignUrlCloudFrontPermission:
     Type: AWS::Lambda::Permission
+    DependsOn: GetPresignUrlLambda
     Properties:
       Action: lambda:InvokeFunctionUrl
-      FunctionName: !GetAtt GetPresignUrlLambda.Arn
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetPresignURL${ResourceSuffix}"
       Principal: cloudfront.amazonaws.com
       FunctionUrlAuthType: AWS_IAM
       SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
 
+  GetPresignUrlCloudFrontInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: GetPresignUrlLambda
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetPresignURL${ResourceSuffix}"
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
+
   GetJobResultCloudFrontPermission:
     Type: AWS::Lambda::Permission
+    DependsOn: GetJobResultLambda
     Properties:
       Action: lambda:InvokeFunctionUrl
-      FunctionName: !GetAtt GetJobResultLambda.Arn
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetJobResult${ResourceSuffix}"
       Principal: cloudfront.amazonaws.com
       FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
+
+  GetJobResultCloudFrontInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: GetJobResultLambda
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:sbGetJobResult${ResourceSuffix}"
+      Principal: cloudfront.amazonaws.com
       SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DistributionId}"
 
   # ───────── CloudFront Origin Access Control ─────────
@@ -303,7 +425,7 @@ Resources:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: securebin-presign-oac
+        Name: !Sub "securebin-presign-oac${ResourceSuffix}"
         OriginAccessControlOriginType: lambda
         SigningBehavior: always
         SigningProtocol: sigv4
@@ -312,7 +434,7 @@ Resources:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
       OriginAccessControlConfig:
-        Name: securebin-categorize-job-oac
+        Name: !Sub "securebin-categorize-job-oac${ResourceSuffix}"
         OriginAccessControlOriginType: lambda
         SigningBehavior: always
         SigningProtocol: sigv4

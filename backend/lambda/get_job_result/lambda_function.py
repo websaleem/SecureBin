@@ -39,8 +39,13 @@ def lambda_handler(event, context):
         else:
             raw_path = event.get("rawPath") or event.get("path") or ""
             parts = raw_path.strip("/").split("/")
-            if len(parts) >= 2 and parts[0] == "result":
-                job_id = parts[1]
+            # The jobId is the segment after "result", wherever "result" appears
+            # — not necessarily first. Production is reached at /result/<id>, but
+            # dev's base URL carries an environment prefix, so the same function
+            # sees /dev/result/<id> and an index-0 check rejected every dev
+            # request with "Missing jobId" while prod looked fine.
+            if "result" in parts and parts.index("result") + 1 < len(parts):
+                job_id = parts[parts.index("result") + 1]
                 logger.info(
                     "Resolved jobId from rawPath | jobId=%s | rawPath=%s | request_id=%s",
                     job_id, raw_path, request_id,
