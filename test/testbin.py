@@ -4,7 +4,7 @@ SecureBin — CloudFront API pipeline test caller.
 
 Mirrors the 3-step flow used by categorizeImage() in the app:
   1. GET /presign  → obtain pre-signed S3 upload URL + jobId
-  2. PUT image     → upload JPEG directly to S3 via the pre-signed URL
+  2. POST image    → upload JPEG directly to S3 via the pre-signed POST form
   3. GET /result   → poll until status is 'done' or 'failed'
 
 Usage:
@@ -14,7 +14,7 @@ Usage:
   # With state + council (tests location-aware Bedrock prompt)
   python testbin.py test/images/plastic_bottle.jpg \
     --state VIC \
-    --council "City of Melbourne"
+    --council "Melbourne City Council"
 
   # Override the CloudFront base URL
   python testbin.py test/images/banana_peel.jpg \
@@ -85,6 +85,22 @@ def step_presign(
         raise RuntimeError(f"Unexpected presign response: {json.dumps(data, indent=2)}")
 
     print(f"  → jobId: {job_id}")
+
+    # The server validates state/council against an exact allowlist and quietly
+    # falls back to general guidance when they do not match. Say so loudly here:
+    # the bin still comes back valid, so nothing else would reveal it.
+    location = data.get("location")
+    if location is None:
+        if state or council:
+            print("  → location: not reported by this server (deployment predates the field)")
+    elif location.get("status") == "accepted":
+        print(f"  → location: accepted ({location['council']}, {location['state']})")
+    elif location.get("status") == "rejected":
+        print(
+            f"  ⚠ location: REJECTED — {council!r} in {state!r} is not in the council "
+            "allowlist, so this scan uses general Australian guidance. Use the exact "
+            "name from constants/councils.ts."
+        )
     return upload_url, upload_fields, job_id
 
 
@@ -155,7 +171,7 @@ def main() -> int:
         help="CloudFront base URL (or set SECUREBIN_API_BASE_URL env var)",
     )
     ap.add_argument("--state", default=None, help="Australian state/territory code (e.g. VIC)")
-    ap.add_argument("--council", default=None, help='Council name (e.g. "City of Melbourne")')
+    ap.add_argument("--council", default=None, help='Council name exactly as listed in constants/councils.ts (e.g. "Melbourne City Council")')
     ap.add_argument("--timeout", type=int, default=30, help="HTTP request timeout in seconds")
     args = ap.parse_args()
 

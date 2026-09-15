@@ -70,6 +70,21 @@ def _validate_location(state, council):
     return state, council
 
 
+def _location_report(raw_state, raw_council, state, council):
+    """Describe the outcome of location validation for the API response.
+
+    "accepted" means a known state/council pair will shape the advice,
+    "rejected" means one was supplied but is not in the allowlist, and "none"
+    means the caller sent no location. Rejected input is not echoed back: it is
+    untrusted text and the caller already has it.
+    """
+    if state and council:
+        return {"status": "accepted", "state": state, "council": council}
+    if raw_state or raw_council:
+        return {"status": "rejected", "state": None, "council": None}
+    return {"status": "none", "state": None, "council": None}
+
+
 def lambda_handler(event, context):
     request_id = getattr(context, "aws_request_id", "unknown")
     logger.info("presign invoked", extra={"request_id": request_id})
@@ -153,13 +168,17 @@ def lambda_handler(event, context):
             )
             raise
 
-        # Step 6: return success
+        # Step 6: return success. An unrecognised council does not fail the
+        # request — the scan still runs with general guidance — but it must not be
+        # silent either, or the caller gets a valid bin and never learns its
+        # location was ignored.
         logger.info("presign success | jobId=%s | request_id=%s", job_id, request_id)
         return _json(200, {
             "uploadUrl": post_data["url"],
             "uploadFields": post_data["fields"],
             "jobId": job_id,
-            "expiresIn": EXPIRES
+            "expiresIn": EXPIRES,
+            "location": _location_report(raw_state, raw_council, state, council),
         })
 
     except Exception:
