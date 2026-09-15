@@ -1,5 +1,4 @@
 import { CameraView } from 'expo-camera';
-import { File } from 'expo-file-system';
 import { BlurView } from 'expo-blur';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
@@ -15,6 +14,7 @@ import {
 } from 'react-native';
 import { useCamera } from '../hooks/useCamera';
 import { categorizeImage } from '../services/categorizer';
+import { deleteQuietly } from '../services/files';
 import { addToHistory, saveImageLocally } from '../services/history';
 import { getLocation } from '../services/location';
 import { ScanRecord } from '../types';
@@ -67,17 +67,26 @@ export default function CameraScreen() {
     const photo = await takePicture();
     if (!photo) return;
 
-    const reticle = await measureView(reticleRef);
-    if (!reticle.width || !reticle.height) return;
-    const { width: screenW, height: screenH } = Dimensions.get('window');
-    const cropRegion = computeCrop(photo.width, photo.height, screenW, screenH, reticle);
-    const manipulated = await ImageManipulator.manipulate(photo.uri)
-      .crop(cropRegion)
-      .renderAsync();
-    const { uri } = await manipulated.saveAsync({ compress: 0.9, format: SaveFormat.JPEG });
+    // The full-resolution capture is only needed to produce the crop. Delete it
+    // on every path out of this block — including an unmeasurable reticle or a
+    // failed crop — or each scan leaves a multi-megabyte JPEG in the cache.
+    let uri: string | undefined;
+    try {
+      const reticle = await measureView(reticleRef);
+      if (!reticle.width || !reticle.height) return;
+      const { width: screenW, height: screenH } = Dimensions.get('window');
+      const cropRegion = computeCrop(photo.width, photo.height, screenW, screenH, reticle);
+      const manipulated = await ImageManipulator.manipulate(photo.uri)
+        .crop(cropRegion)
+        .renderAsync();
+      ({ uri } = await manipulated.saveAsync({ compress: 0.9, format: SaveFormat.JPEG }));
+    } finally {
+      if (photo.uri !== uri) deleteQuietly(photo.uri);
+    }
+    if (!uri) return;
 
     setIsClassifying(true);
-    let tempUri: string | null = uri;
+    const tempUri = uri;
     try {
       const result = await categorizeImage(uri);
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -115,15 +124,7 @@ export default function CameraScreen() {
       // The cropped frame has been copied into scan_images (or the scan failed
       // and it is not needed at all). Drop the cache copy either way so the
       // cache directory does not accumulate one JPEG per scan.
-      if (tempUri) {
-        try {
-          const f = new File(tempUri);
-          if (f.exists) f.delete();
-        } catch {
-          // Already gone — nothing to do.
-        }
-        tempUri = null;
-      }
+      deleteQuietly(tempUri);
 
       // Small artificial cooldown to allow Android OS and OkHttp connection pool 
       // to cleanly release file handles and sockets before allowing the next scan.

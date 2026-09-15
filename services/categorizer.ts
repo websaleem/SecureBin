@@ -2,6 +2,7 @@ import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { CategorizationResult } from '../types';
 import { getLocation } from './location';
+import { deleteQuietly } from './files';
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? '').replace(/\/$/, '');
 if (!API_BASE) {
@@ -39,7 +40,17 @@ async function resizeImage(imageUri: string): Promise<string> {
 
 export async function categorizeImage(imageUri: string): Promise<CategorizationResult> {
   const resizedUri = await resizeImage(imageUri);
+  try {
+    return await categorizeResized(resizedUri);
+  } finally {
+    // The resized copy exists only for this upload. The caller still owns
+    // imageUri — it copies that into scan history afterwards — so never delete
+    // it, even if the manipulator happened to hand back the same path.
+    if (resizedUri !== imageUri) deleteQuietly(resizedUri);
+  }
+}
 
+async function categorizeResized(resizedUri: string): Promise<CategorizationResult> {
   // Step 1: request pre-signed S3 upload URL (include location for council-specific advice)
   const location = await getLocation();
   const params = new URLSearchParams({ mediaType: 'image/jpeg' });
@@ -97,11 +108,7 @@ export async function categorizeImage(imageUri: string): Promise<CategorizationR
     });
   } finally {
     // Always clean up the temporary unique file to prevent disk leaks
-    try {
-      uniqueFile.delete();
-    } catch (e) {
-      // Ignore cleanup errors
-    }
+    deleteQuietly(uniqueFile.uri);
   }
 
   // Step 3: poll for categorization result
