@@ -183,8 +183,22 @@ for label, query, want_status, want_stored in PRESIGN:
               query["council"] in resp["body"], False)
 pre._ddb, pre._s3 = original_pre_ddb, original_pre_s3
 
-print()
-if failures:
-    print(f"{len(failures)} FAILURE(S)")
-    sys.exit(1)
-print("ALL TESTS PASS")
+def test_lambda_units():
+    """Entry point for pytest.
+
+    The checks above run at import, and `check` records failures rather than
+    raising, so pytest saw a module with no test functions and reported "no
+    tests ran" — exiting green having verified nothing. This gives it one test
+    to collect that fails if any check did.
+    """
+    assert not failures, "\n".join(failures)
+
+
+if __name__ == "__main__":
+    print()
+    if failures:
+        print(f"{len(failures)} FAILURE(S)")
+        for failure in failures:
+            print(f"  {failure}")
+        sys.exit(1)
+    print("ALL TESTS PASS")
