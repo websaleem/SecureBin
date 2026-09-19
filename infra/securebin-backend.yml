@@ -67,7 +67,10 @@ Parameters:
     Default: 1
     Description: >-
       Days before an uploaded image is expired by S3. This is the ONLY retention
-      mechanism, and website/privacy.html states 24 hours — change both together.
+      mechanism. S3 applies a lifecycle rule in a daily sweep rather than at the
+      instant it comes due, so a 1-day rule means an image is gone within about
+      48 hours of upload and usually sooner — which is what website/privacy.html
+      states. Change both together.
 
   DistributionId:
     Type: String
