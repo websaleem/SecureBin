@@ -13,11 +13,19 @@ import {
   View,
 } from 'react-native';
 import { useCamera } from '../hooks/useCamera';
-import { categorizeImage } from '../services/categorizer';
+import { categorizeImage, type ScanErrorKind } from '../services/categorizer';
 import { deleteQuietly } from '../services/files';
 import { addToHistory, saveImageLocally } from '../services/history';
 import { getLocation } from '../services/location';
 import { ScanRecord } from '../types';
+
+const ALERT_TITLES: Record<ScanErrorKind, string> = {
+  IMAGE_TOO_LARGE: 'Photo Too Large',
+  UPLOAD_REJECTED: 'Upload Failed',
+  NETWORK: 'Connection Problem',
+  TIMEOUT: 'Taking Too Long',
+  BACKEND: 'Categorization Failed',
+};
 
 function measureView(ref: React.RefObject<View | null>): Promise<{ x: number; y: number; width: number; height: number }> {
   return new Promise(resolve => {
@@ -115,8 +123,12 @@ export default function CameraScreen() {
       });
     } catch (err: any) {
       console.error('Categorization error:', err);
+      // Only a BACKEND failure means the item could not be categorized. The
+      // rest never reached the model at all, and titling them "Categorization
+      // Failed" sent people off retaking a photo that was never the problem.
+      const title = ALERT_TITLES[err?.kind as ScanErrorKind] ?? 'Categorization Failed';
       Alert.alert(
-        'Categorization Failed',
+        title,
         err.message || 'Could not categorize the item. Please try again.',
         [{ text: 'OK' }]
       );

@@ -12,6 +12,48 @@ const MAX_IMAGE_PX = 1024;
 const POLL_INTERVAL_MS = 2000;
 const POLL_MAX_ATTEMPTS = 30;
 
+// Must match the content-length-range in the presign Lambda's POST policy.
+// S3 rejects anything larger with 400 EntityTooLarge *before* the object is
+// created, so the upload trigger never fires, the categorizer never runs, and
+// the job sits at `pending` until the poll below gives up — which reaches the
+// user as a categorization failure even though nothing was ever categorized.
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+// Stay clear of the hard cap: a marginal encode should not be what decides
+// whether a scan works.
+const UPLOAD_BYTE_BUDGET = 4 * 1024 * 1024;
+
+// Long-edge targets, tried in order. 1024 is the intended size; the smaller
+// steps are only reached if the first is somehow still over budget.
+const RESIZE_STEPS = [MAX_IMAGE_PX, 768, 512];
+
+/**
+ * Why a scan failed, so the UI can say something true about it.
+ *
+ * Without this, an upload rejected for size and a photo the model genuinely
+ * could not read produced the same "Categorization Failed" alert, which sent
+ * the user off retaking a perfectly good photo.
+ */
+export type ScanErrorKind =
+  | 'IMAGE_TOO_LARGE'
+  | 'UPLOAD_REJECTED'
+  | 'NETWORK'
+  | 'BACKEND'
+  | 'TIMEOUT';
+
+export class ScanError extends Error {
+  readonly kind: ScanErrorKind;
+
+  constructor(kind: ScanErrorKind, message: string) {
+    super(message);
+    this.name = 'ScanError';
+    this.kind = kind;
+    // Subclassing Error loses the prototype chain under some RN/TS transpile
+    // targets, which would break any `instanceof` check on this type.
+    Object.setPrototypeOf(this, ScanError.prototype);
+  }
+}
+
 type PresignResponse = { uploadUrl: string; uploadFields: Record<string, string>; jobId: string };
 type JobResult = {
   status: 'pending' | 'done' | 'failed';
@@ -23,19 +65,92 @@ type JobResult = {
   errorCode?: 'UNCLEAR_IMAGE' | 'MODEL_BUSY' | 'INTERNAL_ERROR';
 };
 
+type Dims = { width: number; height: number };
+
+/**
+ * Dimensions are usable only if both are finite and positive.
+ *
+ * `Math.max(undefined, undefined)` is NaN, and every comparison against NaN is
+ * false — so a dimension that fails to read made the old "is this image too
+ * big?" test answer "no" and skip the resize entirely.
+ */
+function readDims(ref: { width?: number; height?: number } | null): Dims | null {
+  const width = Number(ref?.width);
+  const height = Number(ref?.height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return null;
+  if (width <= 0 || height <= 0) return null;
+  return { width, height };
+}
+
+function describe(dims: Dims | null): string {
+  return dims ? `${dims.width}x${dims.height}` : 'unreadable';
+}
+
+/**
+ * Downscale for upload, and verify it actually happened.
+ *
+ * This previously resized only when the source measured larger than the target
+ * and returned the original otherwise — which fails open. A production upload
+ * was found on S3 at 3152x2856 and 3.78 MB, so the resize had not run despite
+ * the source being far over the limit; anything past 5 MB is refused by S3
+ * outright. Two changes follow from that: resize unconditionally rather than
+ * only when a comparison proves it necessary, and check the encoded size
+ * afterwards instead of assuming the resize worked.
+ */
 async function resizeImage(imageUri: string): Promise<string> {
-  const imageRef = await ImageManipulator.manipulate(imageUri).renderAsync();
+  const sourceRef = await ImageManipulator.manipulate(imageUri).renderAsync();
+  const sourceDims = readDims(sourceRef);
 
-  const longSide = Math.max(imageRef.width, imageRef.height);
-  const resizeOpts = imageRef.width >= imageRef.height
-    ? { width: MAX_IMAGE_PX }
-    : { height: MAX_IMAGE_PX };
-  const finalRef = longSide > MAX_IMAGE_PX
-    ? await ImageManipulator.manipulate(imageRef).resize(resizeOpts).renderAsync()
-    : imageRef;
+  let best: string | null = null;
+  let bestBytes = Number.POSITIVE_INFINITY;
 
-  const { uri } = await finalRef.saveAsync({ compress: 0.8, format: SaveFormat.JPEG });
-  return uri;
+  for (const longEdge of RESIZE_STEPS) {
+    // Constrain whichever axis is longer, so `longEdge` really is the long
+    // edge. With dimensions unreadable, constrain the width: the result is
+    // then bounded by aspect ratio rather than left at full resolution.
+    const opts = sourceDims && sourceDims.height > sourceDims.width
+      ? { height: longEdge }
+      : { width: longEdge };
+
+    // Skip the resize only when the source is *known* to be within the target;
+    // upscaling a small photo would cost bytes and gain nothing. Unknown
+    // dimensions resize, because that is the case the old code got wrong.
+    const withinTarget =
+      sourceDims !== null && Math.max(sourceDims.width, sourceDims.height) <= longEdge;
+    const ref = withinTarget
+      ? sourceRef
+      : await ImageManipulator.manipulate(sourceRef).resize(opts).renderAsync();
+    const { uri } = await ref.saveAsync({ compress: 0.8, format: SaveFormat.JPEG });
+    const bytes = new File(uri).size;
+
+    // `out` is the decisive field: if it is still the source dimensions after
+    // resized=true, the manipulator accepted the resize and did not apply it.
+    console.log(
+      `[scan] resize longEdge=${longEdge} resized=${!withinTarget} ` +
+      `source=${describe(sourceDims)} out=${describe(readDims(ref))} bytes=${bytes}`,
+    );
+
+    if (best) deleteQuietly(best);
+    best = uri;
+    bestBytes = bytes;
+
+    // size 0 means the file could not be read, not that it is empty. Nothing
+    // is learned by shrinking again, so take the result and let the upload
+    // report the truth.
+    if (bytes === 0 || bytes <= UPLOAD_BYTE_BUDGET) return uri;
+  }
+
+  if (best && bestBytes > MAX_UPLOAD_BYTES) {
+    deleteQuietly(best);
+    throw new ScanError(
+      'IMAGE_TOO_LARGE',
+      'That photo was too large to send, even after shrinking it. Please try again.',
+    );
+  }
+
+  // Between the budget and the hard cap: larger than intended, but S3 will
+  // still accept it, so attempting the upload beats refusing outright.
+  return best as string;
 }
 
 export async function categorizeImage(imageUri: string): Promise<CategorizationResult> {
@@ -99,11 +214,29 @@ async function categorizeResized(resizedUri: string): Promise<CategorizationResu
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
           resolve();
+          return;
+        }
+        // The response body carries S3's own error code. EntityTooLarge means
+        // the POST policy's size condition refused it, which is a fact about
+        // the photo, not about the service.
+        const body = xhr.responseText ?? '';
+        console.log(`[scan] upload rejected status=${xhr.status} body=${body.slice(0, 300)}`);
+        if (xhr.status === 400 && body.includes('EntityTooLarge')) {
+          reject(new ScanError(
+            'IMAGE_TOO_LARGE',
+            'That photo was too large to send. Please try again.',
+          ));
         } else {
-          reject(new Error(`S3 upload error: ${xhr.status} - ${xhr.responseText}`));
+          reject(new ScanError(
+            'UPLOAD_REJECTED',
+            `The photo could not be uploaded (error ${xhr.status}). Please try again.`,
+          ));
         }
       };
-      xhr.onerror = () => reject(new Error('S3 upload network request failed (XHR)'));
+      xhr.onerror = () => reject(new ScanError(
+        'NETWORK',
+        'Could not reach SecureBin. Check your connection and try again.',
+      ));
       xhr.send(formData);
     });
   } finally {
@@ -135,11 +268,19 @@ async function categorizeResized(resizedUri: string): Promise<CategorizationResu
     if (data.status === 'failed') {
       // The backend already returns a user-safe message tailored to the failure
       // class, so surface it as-is rather than prefixing it with our own guess.
-      throw new Error(
+      console.log(`[scan] backend failure jobId=${jobId} errorCode=${data.errorCode}`);
+      throw new ScanError(
+        'BACKEND',
         data.error ?? 'Could not categorize the item. Please try again.',
       );
     }
   }
 
-  throw new Error(`Categorization timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`);
+  // The job never left `pending`. The usual cause is an upload that never
+  // produced an object, so nothing ever triggered the categorizer.
+  console.log(`[scan] timed out waiting for jobId=${jobId}`);
+  throw new ScanError(
+    'TIMEOUT',
+    'The scan is taking longer than expected. Please try again.',
+  );
 }
