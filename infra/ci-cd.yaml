@@ -171,6 +171,15 @@ Resources:
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
+      # The effective limit was CodeBuild's 45-minute default, which two builds
+      # hit. Stated explicitly so the budget is visible and version-controlled.
+      TimeoutInMinutes: 60
+      # Without this the project runs with NO_CACHE and re-downloads every
+      # Gradle dependency each build. S3 rather than LOCAL, because local caches
+      # only help when the same build host happens to be reused.
+      Cache:
+        Type: S3
+        Location: !Sub "${ArtifactsBucket}/codebuild-cache"
 
   SecureBinPipeline:
     Type: AWS::CodePipeline::Pipeline

@@ -4,6 +4,11 @@ env:
   # Run commands in bash explicitly: post_build relies on `source`, which POSIX
   # sh does not provide.
   shell: bash
+  variables:
+    # Pin Gradle's home so the cache paths below are exact. Defaulting to
+    # $HOME/.gradle would make the cache depend on the image's HOME, and a
+    # mismatch caches nothing while still reporting success.
+    GRADLE_USER_HOME: /codebuild/gradle-home
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
@@ -93,7 +98,23 @@ phases:
     commands:
       - echo "Building release AAB..."
       - cd android
-      - ./gradlew bundleRelease -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
+      - |
+        # Release builds only need the ABIs real Play Store devices use.
+        # gradle.properties lists x86 and x86_64 as well, which exist for
+        # emulators; building all four doubled the native compilation and is
+        # what ran this past the build timeout — the last two failures both
+        # stalled in buildCMakeRelWithDebInfo[x86]/[x86_64].
+        #
+        # The daemon also logged "running out of JVM Metaspace" against the
+        # 512m default, so raise the build JVM here rather than in
+        # gradle.properties, which local device builds share.
+        ./gradlew bundleRelease \
+          -PreactNativeArchitectures=armeabi-v7a,arm64-v8a \
+          -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+          -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks \
+          -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" \
+          -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" \
+          -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
       - cd ..
   post_build:
     commands:
@@ -116,3 +137,12 @@ artifacts:
   files:
     - android/app/build/outputs/bundle/release/app-release.aab
   name: securebin-release-aab
+
+cache:
+  paths:
+    # Gradle's dependency and wrapper caches, which are re-downloaded on every
+    # build today (the project has no cache configured at all). The Android SDK
+    # is deliberately not cached: the install phase fetches it in about a
+    # minute, and restoring ~1.5GB would cost more than it saves.
+    - '/codebuild/gradle-home/caches/modules-2/**/*'
+    - '/codebuild/gradle-home/wrapper/**/*'
