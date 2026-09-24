@@ -1,13 +1,21 @@
 version: 0.2
 
 env:
+  # Run commands in bash explicitly: this spec relies on `source`, which POSIX
+  # sh does not provide.
+  shell: bash
   variables:
     TRACK: "alpha"
+    # Pinned so the cache paths below are exact rather than dependent on the
+    # image's HOME.
+    GRADLE_USER_HOME: /codebuild/gradle-home
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
     UPLOAD_KEY_ALIAS: "/securebin/upload-key-alias"
     UPLOAD_KEY_PASSWORD: "/securebin/upload-key-password"
+    # CodeBuild resolves this before the build starts, so the stage fails
+    # immediately if the parameter is absent.
     SERVICE_ACCOUNT_JSON: "/securebin/google-play-service-account"
 
 phases:
@@ -17,24 +25,31 @@ phases:
       java: corretto17
       ruby: 3.2
     commands:
-      - echo "Installing NPM dependencies..."
-      - echo "Detecting branch and configuring deployment environment..."
+      - echo "Resolving deployment environment from the pipeline branch..."
       - |
-        if [ "$CODEBUILD_SOURCE_VERSION" = "main" ] || [ "$CODEBUILD_SOURCE_VERSION" = "refs/heads/main" ]; then
-          echo "=== Configuring for PRODUCTION (main branch) ==="
-          export SSM_PREFIX=/securebin/prod
-          export TARGET_BUCKET=securebin.websaleem.com
-          export ENV_FILE=.env.production
-          export TRACK_RESOLVED=production
-        else
-          echo "=== Configuring for DEVELOPMENT (dev branch) ==="
-          export SSM_PREFIX=/securebin/dev
-          export TARGET_BUCKET=dev.securebin.websaleem.com
-          export ENV_FILE=.env.development
-          export TRACK_RESOLVED=${TRACK:-alpha}
-        fi
-        # Strict resolution. A failed lookup must stop the build: silently
-        # falling back would ship a production binary pointed at dev.
+        # BRANCH_NAME is passed by the pipeline (infra/ci-cd.yaml). Under
+        # CodePipeline, CODEBUILD_SOURCE_VERSION is an S3 artifact ARN and can
+        # never identify the branch; checking it sent every run down the dev
+        # path, which here would publish a production build to the alpha track.
+        case "${BRANCH_NAME:-}" in
+          main|refs/heads/main)
+            echo "=== Configuring for PRODUCTION (branch: $BRANCH_NAME) ==="
+            export SSM_PREFIX=/securebin/prod
+            export ENV_FILE=.env.production
+            export TRACK_RESOLVED=production
+            ;;
+          "")
+            echo "FATAL: BRANCH_NAME is not set; refusing to guess the deployment environment"; exit 1
+            ;;
+          *)
+            echo "=== Configuring for DEVELOPMENT (branch: $BRANCH_NAME) ==="
+            export SSM_PREFIX=/securebin/dev
+            export ENV_FILE=.env.development
+            export TRACK_RESOLVED=${TRACK:-alpha}
+            ;;
+        esac
+        # Strict resolution. A failed lookup must stop the run: silently falling
+        # back would publish a binary pointed at the wrong API.
         export API_URL=$(aws ssm get-parameter --name ${SSM_PREFIX}/api-base-url --query 'Parameter.Value' --output text)
         if [ -z "$API_URL" ] || [ "$API_URL" = "None" ]; then
           echo "FATAL: SSM parameter ${SSM_PREFIX}/api-base-url is missing or empty"; exit 1
@@ -43,40 +58,72 @@ phases:
           https://*) ;;
           *) echo "FATAL: ${SSM_PREFIX}/api-base-url must be an https URL, got: $API_URL"; exit 1 ;;
         esac
-        export CF_DIST_ID=$(aws ssm get-parameter --name ${SSM_PREFIX}/cloudfront-dist-id --query 'Parameter.Value' --output text)
-        if [ -z "$CF_DIST_ID" ] || [ "$CF_DIST_ID" = "None" ]; then
-          echo "FATAL: SSM parameter ${SSM_PREFIX}/cloudfront-dist-id is missing or empty"; exit 1
-        fi
         echo "EXPO_PUBLIC_API_BASE_URL=$API_URL" > $ENV_FILE
-        cat $ENV_FILE
-        echo "export SSM_PREFIX=$SSM_PREFIX" > .env.deploy
-        echo "export TARGET_BUCKET=$TARGET_BUCKET" >> .env.deploy
-        echo "export TRACK_RESOLVED=$TRACK_RESOLVED" >> .env.deploy
-        echo "export CF_DIST_ID=$CF_DIST_ID" >> .env.deploy
+        echo "export TRACK_RESOLVED=$TRACK_RESOLVED" > .env.deploy
+      - |
+        # The standard:7.0 image ships no Android SDK. The build stage installs
+        # it too; this stage builds its own signed AAB and needs it as well.
+        export ANDROID_HOME="$HOME/android-sdk"
+        export ANDROID_SDK_ROOT="$ANDROID_HOME"
+        mkdir -p "$ANDROID_HOME/cmdline-tools"
+        curl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+          && unzip -q /tmp/cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+          && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+          || { echo "FATAL: could not install Android cmdline-tools"; exit 1; }
+        yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+        "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+          "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.30.5" \
+          > /tmp/sdkmanager.log 2>&1 \
+          || { tail -50 /tmp/sdkmanager.log; echo "FATAL: sdkmanager install failed"; exit 1; }
+        echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+        echo "Android SDK ready at $ANDROID_HOME"
       - npm ci --legacy-peer-deps
       - echo "Installing Fastlane..."
       - gem install fastlane -NV
   pre_build:
     commands:
-      - echo "Decoding keystore..."
+      - echo "Running Lambda unit tests..."
+      - python3 test/test_lambda_units.py
+      - echo "Decoding signing and Play credentials..."
       - echo "$UPLOAD_KEYSTORE_BASE64" | base64 --decode > android/app/upload.jks
-      - echo "Writing service account JSON..."
       - printf '%s' "$SERVICE_ACCOUNT_JSON" > android/app/api.json
       - chmod 600 android/app/api.json android/app/upload.jks
   build:
     commands:
-      - echo "Building release AAB..."
-      - cd android
-      - ./gradlew bundleRelease -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
+      - echo "Building signed release AAB..."
+      - |
+        # Same ABI set as the build stage: Play Store devices are ARM, and
+        # compiling the emulator ABIs as well is what used to exhaust the
+        # build timeout.
+        cd android
+        ./gradlew bundleRelease \
+          -PreactNativeArchitectures=armeabi-v7a,arm64-v8a \
+          -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+          -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks \
+          -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" \
+          -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" \
+          -PSECUREBIN_UPLOAD_KEY_PASSWORD="$UPLOAD_KEY_PASSWORD"
+        cd ..
   post_build:
     commands:
-      - source .env.deploy && echo "Deploying to Google Play via Fastlane ($TRACK_RESOLVED)..."
-      - source .env.deploy && fastlane deploy track:$TRACK_RESOLVED
-      - source .env.deploy && echo "Deploying website to S3 ($TARGET_BUCKET)..."
-      - source .env.deploy && aws s3 sync website/ s3://$TARGET_BUCKET/ --exclude "*.DS_Store" --cache-control "public, max-age=300"
-      - source .env.deploy && aws s3 cp website/index.html s3://$TARGET_BUCKET/ --content-type "text/html" --cache-control "public, max-age=300"
-      - source .env.deploy && echo "Invalidating CloudFront distribution ($CF_DIST_ID)..."
-      - source .env.deploy && aws cloudfront create-invalidation --distribution-id $CF_DIST_ID --paths "/*" "/"
-      - echo "Removing build credentials from the workspace..."
-      - shred -u android/app/api.json android/app/upload.jks 2>/dev/null || rm -f android/app/api.json android/app/upload.jks
-      - echo "Deployment complete."
+      - |
+        # post_build runs even when the build phase failed. Uploading then would
+        # publish whatever stale AAB happened to be on disk.
+        if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then
+          echo "Build did not succeed; skipping Play Store upload."
+        else
+          source .env.deploy \
+            && echo "Uploading to Google Play ($TRACK_RESOLVED, as a draft release)..." \
+            && ( cd android && fastlane deploy track:"$TRACK_RESOLVED" ) \
+            && echo "Play Store upload complete."
+        fi
+      - |
+        # Always remove the credentials, including after a failed upload.
+        echo "Removing build credentials from the workspace..."
+        shred -u android/app/api.json android/app/upload.jks 2>/dev/null \
+          || rm -f android/app/api.json android/app/upload.jks
+
+cache:
+  paths:
+    - '/codebuild/gradle-home/caches/modules-2/**/*'
+    - '/codebuild/gradle-home/wrapper/**/*'
