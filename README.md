@@ -283,6 +283,39 @@ cp .env.example .env
 EXPO_PUBLIC_API_BASE_URL=https://xxxxxxxx.cloudfront.net
 ```
 
+The real value lives in SSM, one per environment. `services/categorizer.ts`
+throws at import if it is missing, so the app cannot start without it:
+
+```bash
+aws ssm get-parameter --region ap-southeast-2 \
+  --name /securebin/prod/api-base-url --query Parameter.Value --output text
+```
+
+`npx expo start` runs in development mode and reads `.env.development`, not
+`.env.production`. `EXPO_PUBLIC_*` values are inlined at bundle time, so restart
+Metro with `--clear` after changing them.
+
+### Local build prerequisites
+
+A clone cannot build until these exist; none are in the repo.
+
+| Requirement | Notes |
+|---|---|
+| JDK 17 | `brew install openjdk@17`. Keg-only, so set `JAVA_HOME=/opt/homebrew/opt/openjdk@17` — it will not appear on `PATH` or in `java_home` by itself. |
+| Android SDK | platform 36, build-tools 36.0.0, NDK 27.1.12297006, CMake 3.22.1. Point Gradle at it with `android/local.properties` containing `sdk.dir=$HOME/Library/Android/sdk`. |
+| `android/app/debug.keystore` | Gitignored, and `:app:validateSigningDebug` fails without it. Generate the standard debug key — the credentials below are Android's published defaults, already hardcoded in `android/app/build.gradle`. |
+
+```bash
+keytool -genkeypair -v -storetype PKCS12 \
+  -keystore android/app/debug.keystore -alias androiddebugkey \
+  -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=Android Debug,O=Android,C=US"
+```
+
+A debug build loads its JavaScript from Metro, so the device needs
+`adb reverse tcp:8081 tcp:8081` and the cable connected. Building one ABI
+(`-PreactNativeArchitectures=arm64-v8a`) is much faster for device testing.
+
 ---
 
 ## Commands
@@ -336,16 +369,21 @@ Test images covering all bin categories live in `test/images/`.
 
 The CI/CD pipeline has been migrated to **AWS CodePipeline** using Fastlane for Android deployments to the Google Play Store. The pipeline connects securely to GitHub using an AWS CodeConnection.
 
-The AWS infrastructure is defined in `cloudformation/ci-cd.yaml` which provisions a 4-stage pipeline:
+The AWS infrastructure is defined in `infra/ci-cd.yaml` which provisions a 4-stage pipeline:
 1. **Source**: Pulls code from GitHub securely via CodeConnections.
 2. **Build**: Builds the Android AAB using AWS CodeBuild.
 3. **Approval**: Pauses the pipeline and waits for manual approval in the AWS Console.
-4. **Deploy**: Deploys the AAB to Google Play via Fastlane running on AWS CodeBuild.
+4. **Deploy**: Builds a signed AAB and publishes it to Google Play via Fastlane, as a draft
+   release on the `production` track for `main` and `alpha` otherwise.
+
+Both build actions receive `BRANCH_NAME` from the source action. CodeBuild's own
+`CODEBUILD_SOURCE_VERSION` is an S3 artifact ARN under CodePipeline and can never
+identify the branch.
 
 EventBridge & SNS are also configured to send email notifications on pipeline success/failure.
 
 ### Required AWS Secrets
-The pipelines fetch the following secrets from AWS Secrets Manager (stored under `securebin/*`):
+The pipelines fetch the following from SSM Parameter Store as SecureStrings (under `/securebin/*`):
 - `securebin/upload-keystore` (Base64 encoded `.jks` file)
 - `securebin/upload-store-password`
 - `securebin/upload-key-alias`
