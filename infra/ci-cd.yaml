@@ -163,7 +163,10 @@ Resources:
         Type: CODEPIPELINE
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
+        # MEDIUM is 7GB, which this build has repeatedly overrun: first as
+        # timeouts, then as the kernel killing the Gradle daemon outright while
+        # R8 and the native toolchain ran together. LARGE is 15GB/8 vCPU.
+        ComputeType: BUILD_GENERAL1_LARGE
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: NODE_VERSION
@@ -190,7 +193,10 @@ Resources:
         Type: CODEPIPELINE
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_MEDIUM
+        # MEDIUM is 7GB, which this build has repeatedly overrun: first as
+        # timeouts, then as the kernel killing the Gradle daemon outright while
+        # R8 and the native toolchain ran together. LARGE is 15GB/8 vCPU.
+        ComputeType: BUILD_GENERAL1_LARGE
         Image: aws/codebuild/standard:7.0
         EnvironmentVariables:
           - Name: NODE_VERSION

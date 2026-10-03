@@ -100,12 +100,16 @@ phases:
         # what ran this past the build timeout — the last two failures both
         # stalled in buildCMakeRelWithDebInfo[x86]/[x86_64].
         #
-        # The daemon also logged "running out of JVM Metaspace" against the
-        # 512m default, so raise the build JVM here rather than in
-        # gradle.properties, which local device builds share.
+        # Memory is the binding constraint on BUILD_GENERAL1_MEDIUM (7GB): a 4g
+        # heap plus R8, the native toolchain and the JS bundler overcommitted it
+        # and the kernel killed the daemon mid-build ("Gradle build daemon
+        # disappeared unexpectedly"). 3g still clears the 512m metaspace
+        # exhaustion seen earlier, and capping workers bounds the concurrent
+        # clang processes that run alongside it.
         ./gradlew bundleRelease \
           -PreactNativeArchitectures=armeabi-v7a,arm64-v8a \
-          -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+          -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m" \
+          -Dorg.gradle.workers.max=2 \
           -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks \
           -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" \
           -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" \

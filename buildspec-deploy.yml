@@ -89,13 +89,13 @@ phases:
     commands:
       - echo "Building signed release AAB..."
       - |
-        # Same ABI set as the build stage: Play Store devices are ARM, and
-        # compiling the emulator ABIs as well is what used to exhaust the
-        # build timeout.
+        # Same ABI set and memory settings as the build stage: Play Store
+        # devices are ARM, and a 4g heap on a 7GB host got the daemon OOM-killed.
         cd android
         ./gradlew bundleRelease \
           -PreactNativeArchitectures=armeabi-v7a,arm64-v8a \
-          -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+          -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m" \
+          -Dorg.gradle.workers.max=2 \
           -PSECUREBIN_UPLOAD_STORE_FILE=upload.jks \
           -PSECUREBIN_UPLOAD_STORE_PASSWORD="$UPLOAD_STORE_PASSWORD" \
           -PSECUREBIN_UPLOAD_KEY_ALIAS="$UPLOAD_KEY_ALIAS" \
