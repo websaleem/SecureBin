@@ -178,6 +178,13 @@ Resources:
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec.yml
+      # Stated explicitly rather than omitted. f20c00e removed the Cache block
+      # and the deployed project kept Cache: S3 regardless — CloudFormation left
+      # the existing value in place instead of resetting it. Harmless while the
+      # buildspec declares no cache paths, but it would silently come back the
+      # moment someone added one.
+      Cache:
+        Type: NO_CACHE
       # The effective limit was CodeBuild's 45-minute default, which two builds
       # hit. Stated explicitly so the budget is visible and version-controlled.
       TimeoutInMinutes: 60
@@ -210,6 +217,8 @@ Resources:
       Source:
         Type: CODEPIPELINE
         BuildSpec: buildspec-deploy.yml
+      Cache:
+        Type: NO_CACHE
       TimeoutInMinutes: 60
 
   SecureBinPipeline:
