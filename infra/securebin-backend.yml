@@ -197,6 +197,28 @@ Resources:
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:aws:s3:::${UploadsBucketName}"
 
+  # Restored: f172d72 added this and the d2cadbe rewrite dropped it, so it was
+  # never deployed. Without it the bucket accepts presigned uploads over plain
+  # HTTP — the image and the signed form fields both in the clear. The stack
+  # reports IN_SYNC either way, so nothing surfaces the gap.
+  UploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UploadsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !Sub "arn:aws:s3:::${UploadsBucketName}"
+              - !Sub "arn:aws:s3:::${UploadsBucketName}/*"
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
   # ───────── IAM ─────────
   # Scoped to uploads/* rather than the whole bucket: the presign Lambda mints
   # keys only under that prefix, so nothing needs access outside it.
