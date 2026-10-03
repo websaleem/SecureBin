@@ -4,11 +4,6 @@ env:
   # Run commands in bash explicitly: post_build relies on `source`, which POSIX
   # sh does not provide.
   shell: bash
-  variables:
-    # Pin Gradle's home so the cache paths below are exact. Defaulting to
-    # $HOME/.gradle would make the cache depend on the image's HOME, and a
-    # mismatch caches nothing while still reporting success.
-    GRADLE_USER_HOME: /codebuild/gradle-home
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
@@ -137,12 +132,3 @@ artifacts:
   files:
     - android/app/build/outputs/bundle/release/app-release.aab
   name: securebin-release-aab
-
-cache:
-  paths:
-    # Gradle's dependency and wrapper caches, which are re-downloaded on every
-    # build today (the project has no cache configured at all). The Android SDK
-    # is deliberately not cached: the install phase fetches it in about a
-    # minute, and restoring ~1.5GB would cost more than it saves.
-    - '/codebuild/gradle-home/caches/modules-2/**/*'
-    - '/codebuild/gradle-home/wrapper/**/*'

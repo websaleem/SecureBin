@@ -6,9 +6,6 @@ env:
   shell: bash
   variables:
     TRACK: "alpha"
-    # Pinned so the cache paths below are exact rather than dependent on the
-    # image's HOME.
-    GRADLE_USER_HOME: /codebuild/gradle-home
   parameter-store:
     UPLOAD_KEYSTORE_BASE64: "/securebin/upload-keystore"
     UPLOAD_STORE_PASSWORD: "/securebin/upload-store-password"
@@ -122,8 +119,3 @@ phases:
         echo "Removing build credentials from the workspace..."
         shred -u android/app/api.json android/app/upload.jks 2>/dev/null \
           || rm -f android/app/api.json android/app/upload.jks
-
-cache:
-  paths:
-    - '/codebuild/gradle-home/caches/modules-2/**/*'
-    - '/codebuild/gradle-home/wrapper/**/*'
