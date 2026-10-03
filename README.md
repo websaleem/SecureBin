@@ -390,6 +390,20 @@ The pipelines fetch the following from SSM Parameter Store as SecureStrings (und
 - `securebin/upload-key-password`
 - `securebin/google-play-service-account` (JSON key for Play Console)
 
+### Dependency advisories
+
+`npm audit` reports a few dozen advisories, and they are expected to stay. Every
+leaf advisory is in build tooling — `@xmldom/xmldom`, `postcss`, `braces`,
+`brace-expansion`, `image-size`, `node-forge`, `undici` — reached through
+`@expo/cli`, `@expo/config-plugins` and Metro. None of it ships in the APK: the
+bundle contains React Native, Hermes and the `expo-*` runtime modules only.
+
+`npx expo install --check` reports the pinned versions are correct for SDK 54,
+and npm's suggested remedies are semver-major, including *downgrading* `expo` to
+44.0.6. Fixing these would move the toolchain off Expo's supported set to patch
+code that never reaches a device. Revisit at the next SDK upgrade rather than
+with `npm audit fix`.
+
 > **Note:** The old GitHub Actions workflows have been removed to prevent duplicate runs. You must provision the AWS resources and populate the secrets for the CI/CD pipeline to function.
 
 ---
