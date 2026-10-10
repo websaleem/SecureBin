@@ -367,18 +367,39 @@ Test images covering all bin categories live in `test/images/`.
 
 ## CI / CD (AWS CodePipeline)
 
-The CI/CD pipeline has been migrated to **AWS CodePipeline** using Fastlane for Android deployments to the Google Play Store. The pipeline connects securely to GitHub using an AWS CodeConnection.
+CI builds; releasing is manual. The pipeline is defined in `infra/ci-cd.yaml`
+and connects to GitHub through an AWS CodeConnection. Two stages:
 
-The AWS infrastructure is defined in `infra/ci-cd.yaml` which provisions a 4-stage pipeline:
-1. **Source**: Pulls code from GitHub securely via CodeConnections.
-2. **Build**: Builds the Android AAB using AWS CodeBuild.
-3. **Approval**: Pauses the pipeline and waits for manual approval in the AWS Console.
-4. **Deploy**: Builds a signed AAB and publishes it to Google Play via Fastlane, as a draft
-   release on the `production` track for `main` and `alpha` otherwise.
+1. **Source** — pulls the commit from GitHub via CodeConnections.
+2. **Build** — runs the Lambda unit tests, builds a signed release AAB, deploys
+   the website to S3 and invalidates CloudFront.
 
-Both build actions receive `BRANCH_NAME` from the source action. CodeBuild's own
-`CODEBUILD_SOURCE_VERSION` is an S3 artifact ARN under CodePipeline and can never
-identify the branch.
+The build action receives `BRANCH_NAME` from the source action, which decides
+production vs development. CodeBuild's own `CODEBUILD_SOURCE_VERSION` is an S3
+artifact ARN under CodePipeline and can never identify the branch.
+
+### Releasing to Google Play
+
+Automated publishing needs a Play service account key in SSM; it is deliberately
+not set up, so the Play Console upload is done by hand. The AAB that CI produces
+is signed with the real upload keystore and is publishable as-is.
+
+```bash
+# newest build artifact (a zip containing the AAB)
+KEY=$(aws s3api list-objects-v2 --bucket securebin-cicd-artifactsbucket-n4rptpnw90ta \
+  --prefix SecureBin-Pipeline/BuildArtif/ \
+  --query "sort_by(Contents,&LastModified)[-1].Key" --output text)
+aws s3 cp "s3://securebin-cicd-artifactsbucket-n4rptpnw90ta/$KEY" /tmp/securebin-build.zip
+unzip -o /tmp/securebin-build.zip -d /tmp/securebin-aab && find /tmp/securebin-aab -name '*.aab'
+```
+
+Upload that file in the Play Console. Bump `version` and `android.versionCode`
+in `app.json` before the build, or Play will reject the upload as a duplicate.
+
+`buildspec-deploy.yml` holds the automated Fastlane path and is **not wired into
+the pipeline**. Restoring it means adding a CodeBuild project and a Deploy stage
+(see `24ec37e`) and creating `/securebin/google-play-service-account`. It has
+never executed.
 
 EventBridge & SNS are also configured to send email notifications on pipeline success/failure.
 
@@ -388,7 +409,9 @@ The pipelines fetch the following from SSM Parameter Store as SecureStrings (und
 - `securebin/upload-store-password`
 - `securebin/upload-key-alias`
 - `securebin/upload-key-password`
-- `securebin/google-play-service-account` (JSON key for Play Console)
+
+`securebin/google-play-service-account` is only needed if the automated Play
+upload is restored; nothing reads it today.
 
 ### Dependency advisories
 

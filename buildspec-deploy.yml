@@ -1,3 +1,14 @@
+# NOT WIRED INTO THE PIPELINE.
+#
+# Publishing is manual: CI builds a signed AAB, you download it from the
+# pipeline's build artifact and upload it in the Play Console. See the CI/CD
+# section of the README.
+#
+# This spec is kept because it is the automated path, ready to restore: add a
+# CodeBuild project pointing at it plus a Deploy stage (see git history for
+# 24ec37e), and create /securebin/google-play-service-account. It has never
+# executed, so treat its first run as untested.
+
 version: 0.2
 
 env:

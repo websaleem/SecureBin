@@ -145,9 +145,7 @@ Resources:
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource:
-                  - !GetAtt SecureBinBuildProject.Arn
-                  - !GetAtt SecureBinDeployProject.Arn
+                Resource: !GetAtt SecureBinBuildProject.Arn
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
@@ -187,38 +185,6 @@ Resources:
         Type: NO_CACHE
       # The effective limit was CodeBuild's 45-minute default, which two builds
       # hit. Stated explicitly so the budget is visible and version-controlled.
-      TimeoutInMinutes: 60
-
-  # Builds a signed AAB and publishes it to Google Play via Fastlane.
-  # buildspec-deploy.yml existed for months but no stage ever invoked it, so
-  # every run stopped at Approval and nothing was ever published.
-  SecureBinDeployProject:
-    Type: AWS::CodeBuild::Project
-    Properties:
-      Name: SecureBin-Deploy
-      Description: Publishes the SecureBin AAB to Google Play
-      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
-      Artifacts:
-        Type: CODEPIPELINE
-      Environment:
-        Type: LINUX_CONTAINER
-        # MEDIUM (7GB) is sufficient. The overruns blamed on it were caused by
-        # the build's own settings: a 4g Gradle heap that got the daemon
-        # OOM-killed, and a Gradle cache whose restore forced file copies. With
-        # a 3g heap and workers capped, this builds in 719s — the fastest run
-        # on record, well inside the timeout.
-        ComputeType: BUILD_GENERAL1_MEDIUM
-        Image: aws/codebuild/standard:7.0
-        EnvironmentVariables:
-          - Name: NODE_VERSION
-            Value: '20'
-          - Name: JAVA_VERSION
-            Value: '17'
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: buildspec-deploy.yml
-      Cache:
-        Type: NO_CACHE
       TimeoutInMinutes: 60
 
   SecureBinPipeline:
@@ -263,31 +229,6 @@ Resources:
                 # Under CodePipeline, CODEBUILD_SOURCE_VERSION is an S3 artifact ARN,
                 # never a branch name, so buildspec.yml cannot detect main on its own.
                 # Without this, every build configured itself for development.
-                EnvironmentVariables: '[{"name":"BRANCH_NAME","value":"#{SourceVariables.BranchName}","type":"PLAINTEXT"}]'
-        - Name: Approval
-          Actions:
-            - Name: ManualApproval
-              ActionTypeId:
-                Category: Approval
-                Owner: AWS
-                Provider: Manual
-                Version: '1'
-              Configuration:
-                CustomData: "Approve the build to deploy to Google Play Store"
-        - Name: Deploy
-          Actions:
-            - Name: DeployAction
-              ActionTypeId:
-                Category: Build
-                Owner: AWS
-                Provider: CodeBuild
-                Version: '1'
-              InputArtifacts:
-                - Name: SourceArtifact
-              Configuration:
-                ProjectName: !Ref SecureBinDeployProject
-                # Same reason as the build action: CODEBUILD_SOURCE_VERSION is
-                # an S3 artifact ARN here, so the branch must be passed in.
                 EnvironmentVariables: '[{"name":"BRANCH_NAME","value":"#{SourceVariables.BranchName}","type":"PLAINTEXT"}]'
 
   BuildNotificationTopic:
